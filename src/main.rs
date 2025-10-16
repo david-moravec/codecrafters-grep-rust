@@ -1,6 +1,9 @@
+#![allow(dead_code)]
 use std::env;
 use std::io;
 use std::process;
+
+mod regex_pattern;
 
 fn match_pattern(input_line: &str, pattern: &str) -> bool {
     if pattern.chars().count() == 1 {
