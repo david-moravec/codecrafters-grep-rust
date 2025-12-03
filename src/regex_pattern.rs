@@ -1,4 +1,5 @@
 use anyhow::{anyhow, Result};
+use std::fmt::{Debug, Display, Formatter};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, PartialOrd, Ord)]
 enum Token {
@@ -74,19 +75,30 @@ impl<'a> Scanner<'a> {
 
 #[derive(Debug, Clone)]
 enum StateType {
-    Simple(Box<State>),
-    Split(Box<State>, Box<State>),
+    Simple(Option<Box<State>>),
+    Split(Option<Box<State>>, Option<Box<State>>),
     Match,
     Start(Option<Box<State>>),
 }
 
-#[derive(Debug, Clone, Copy)]
+impl Display for StateType {
+    fn fmt(&self, f: &mut Formatter<'_>) -> Result<(), std::fmt::Error> {
+        match self {
+            StateType::Match => write!(f, "MATCH"),
+            StateType::Start(next) => write!(f, "{:?}", next),
+            StateType::Simple(next) => write!(f, "{:?}", next),
+            StateType::Split(n1, n2) => write!(f, "{:?} | {:?}", n1, n2),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 enum RegexAtom {
     CharacterClass(char),
     Char(char),
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 struct State {
     atom: RegexAtom,
     next: Option<StateType>,
@@ -104,54 +116,70 @@ impl State {
         };
     }
 
-    pub fn out(&self) -> Vec<Box<State>> {
+    pub fn out(&self) -> Vec<Option<Box<State>>> {
         match self.next.clone() {
             Some(next) => match next {
                 StateType::Simple(ref_state) => vec![ref_state],
                 StateType::Split(ref1, ref2) => vec![ref1, ref2],
                 StateType::Match => vec![],
-                StateType::Start(maybe_state) => match maybe_state {
-                    Some(state) => vec![state],
-                    None => vec![],
-                },
+                StateType::Start(state) => vec![state],
             },
             None => vec![],
         }
     }
 }
 
-type FragmentState = Box<State>;
+impl Display for State {
+    fn fmt(&self, f: &mut Formatter<'_>) -> Result<(), std::fmt::Error> {
+        write!(f, "State ({:?})\n", self.atom)?;
+        write!(f, "   |\n")?;
+        write!(f, "   -> ")?;
+
+        match &self.next {
+            Some(next) => write!(f, "{}", next),
+            None => write!(f, "()"),
+        }
+    }
+}
+
+impl Debug for State {
+    fn fmt(&self, f: &mut Formatter<'_>) -> Result<(), std::fmt::Error> {
+        write!(f, "State ({:?})\n", self.atom)?;
+        write!(f, "   |\n")?;
+        write!(f, "   -> ")?;
+
+        match &self.next {
+            Some(next) => write!(f, "{:?}", next),
+            None => write!(f, "()"),
+        }
+    }
+}
+
+type FragmentState = Option<Box<State>>;
 
 #[derive(Clone)]
 struct Fragment {
-    state: FragmentState,
+    state: Box<State>,
     out: Vec<FragmentState>,
 }
 
 impl Fragment {
     pub fn new(state: State) -> Self {
+        let outs = state.out();
+
         return Fragment {
             state: Box::new(state),
-            out: vec![],
-        };
-    }
-
-    pub fn start() -> Self {
-        return Fragment {
-            state: Box::new(State::start()),
-            out: vec![],
+            out: outs,
         };
     }
 
     pub fn patch(&mut self, next_fragment: &Self) {
-        let mut new_out: Vec<FragmentState> = vec![];
+        // let mut new_out: Vec<FragmentState> = vec![];
 
-        for state in self.out.iter_mut() {
-            new_out.extend(state.out().into_iter());
-            state.next = Some(StateType::Simple(next_fragment.state.clone()))
-        }
-
-        self.out = new_out;
+        // for state in self.out.iter_mut() {
+        //     new_out.extend(state.out().into_iter());
+        //     state.next = Some(StateType::Simple(next_fragment.state.clone()))
+        // }
     }
 }
 
@@ -166,15 +194,13 @@ impl<'a> Parser<'a> {
     }
 
     pub fn parse(&mut self) -> Result<State> {
-        let fragments: Vec<Fragment> = vec![];
+        if self.is_at_end() {
+            return Err(anyhow!("Nothing to parse"));
+        }
 
-        while !self.is_at_end() {}
+        let fragment = self.fragment()?;
 
-        let mut start_fragment = Fragment::start();
-
-        start_fragment.patch(&fragments[0]);
-
-        return Ok(*start_fragment.state);
+        return Ok(*fragment.state);
     }
 
     fn consume(&mut self, expected_token: Token) -> Result<()> {
@@ -252,7 +278,7 @@ impl<'a> Parser<'a> {
         match self.peek()? {
             Token::Escape => return self.escaped(),
             Token::Character(_) => return self.character(),
-            _ => todo!("do rest"),
+            _ => Err(anyhow!("Unrecognized token")),
         }
     }
 
@@ -308,38 +334,24 @@ impl<'a> Parser<'a> {
 
 pub struct RegexPattern<'a> {
     tokens: Vec<Token>,
-    pattern_str: &'a str,
+    pattern: &'a str,
     start_state: State,
 }
 
 impl<'a> RegexPattern<'a> {
-    pub fn new(pattern: &'a str) -> Self {
-        let mut regex_pat = RegexPattern {
-            tokens: Vec::new(),
-            pattern_str: pattern,
-            start_state: State::start(),
-        };
+    pub fn new(pattern: &'a str) -> Result<Self> {
+        let mut scanner = Scanner::new(pattern);
+        let tokens = scanner.tokenize();
+        let mut start_state = State::start();
+        start_state.next = Some(StateType::Start(Some(Box::new(
+            Parser::new(&tokens).parse()?,
+        ))));
 
-        regex_pat.tokenize();
-
-        return regex_pat;
-    }
-
-    // fn tokens(&self) -> std::slice::Iter<Token> {
-    //     return self.tokens.iter();
-    // }
-
-    fn tokenize(&mut self) {
-        let mut scanner = Scanner::new(self.pattern_str);
-        self.tokens = scanner.tokenize();
-    }
-
-    fn parse_state(&self) {
-        // for token in self.tokens() {
-        //     match token {
-        //         &Token::Character(c) =>
-        //     }
-        // }
+        return Ok(RegexPattern {
+            tokens,
+            pattern,
+            start_state,
+        });
     }
 }
 
@@ -349,7 +361,7 @@ mod tests {
 
     #[test]
     fn test_regex_pattern_tokenize_easy() {
-        let regex = RegexPattern::new("\\dahoj7");
+        let regex = RegexPattern::new("\\dahoj7").unwrap();
         let tokens = regex.tokens;
 
         assert!(tokens[0] == Token::Escape);
@@ -359,7 +371,7 @@ mod tests {
 
     #[test]
     fn test_regex_pattern_tokenize_harder() {
-        let regex = RegexPattern::new("(aa)|(bb)d?(a+c*)*");
+        let regex = RegexPattern::new("(aa)|(bb)d?(a+c*)*").unwrap();
         let tokens = regex.tokens;
 
         assert!(tokens[0] == Token::LeftBracket);
@@ -380,5 +392,27 @@ mod tests {
         assert!(tokens[15] == Token::WildCard);
         assert!(tokens[16] == Token::RightBracket);
         assert!(tokens[17] == Token::WildCard);
+    }
+
+    #[test]
+    fn test_fragment_patch() {}
+
+    #[test]
+    fn test_regex_pattern_parse_easy() {
+        let regex = match RegexPattern::new("\\dahoj7") {
+            Ok(regex) => regex,
+            Err(err) => {
+                println!("{}", err);
+                assert!(false);
+                return;
+            }
+        };
+
+        let state: State = regex.start_state;
+
+        print!("\n{}\n", state);
+
+        assert!(state.atom == RegexAtom::Char('0'));
+        assert!(state.atom != RegexAtom::Char('0'));
     }
 }
