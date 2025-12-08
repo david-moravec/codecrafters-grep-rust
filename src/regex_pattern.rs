@@ -60,7 +60,7 @@ impl<'a> Scanner<'a> {
         while let Some(c) = self.advance() {
             if c == '\\' {
                 tokens.push(Token::Escape)
-            } else if c.is_alphabetic() {
+            } else if c.is_alphabetic() || c == ' ' {
                 tokens.push(Token::Character(c))
             } else if c == '|' {
                 tokens.push(Token::Pipe);
@@ -780,5 +780,24 @@ mod tests {
         assert!(regex.matches("cat").unwrap());
         assert!(!regex.matches("cab").unwrap());
         assert!(regex.matches("dog").unwrap());
+    }
+
+    #[test]
+    fn test_regex_combine_easy() {
+        let regex = match RegexPattern::new("\\d apple") {
+            Ok(regex) => regex,
+            Err(err) => {
+                println!("{}", err);
+                assert!(false);
+                return;
+            }
+        };
+
+        print!("\n{:?}\n", regex.start_state);
+        assert!(regex.matches("1 apple").unwrap());
+        assert!(!regex.matches("1 appx").unwrap());
+        assert!(!regex.matches("apple").unwrap());
+        assert!(!regex.matches(" apple").unwrap());
+        assert!(!regex.matches("x apple").unwrap());
     }
 }
