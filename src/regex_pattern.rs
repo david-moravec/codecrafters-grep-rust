@@ -190,6 +190,13 @@ impl State {
             },
         }
     }
+
+    pub fn is_match(&self) -> bool {
+        match self {
+            State::Match => true,
+            _ => false,
+        }
+    }
 }
 
 impl Debug for State {
@@ -231,11 +238,9 @@ impl Fragment {
 
     pub fn patch_match(&mut self) {
         for state in self.out.iter() {
-            println!("before match {:?}", state);
             if let StateMut::Simple(_, ref mut next_opt) = *state.borrow_mut() {
                 *next_opt = Some(Rc::new(RefCell::new(StateMut::Match)));
             }
-            println!("after match  {:?}", state);
         }
     }
 }
@@ -453,6 +458,25 @@ impl<'a> RegexPattern<'a> {
 
     pub fn matches(&self, to_match: &str) -> Result<bool> {
         let chars: Vec<char> = to_match.chars().collect();
+        for i in 0..chars.len() {
+            match self.match_from_start(&chars[i..].iter().collect::<String>()) {
+                Ok(matches) => {
+                    if matches {
+                        return Ok(true);
+                    }
+                }
+                Err(e) => return Err(e),
+            }
+        }
+
+        return Ok(false);
+    }
+
+    fn match_from_start(&self, to_match: &str) -> Result<bool> {
+        // println!("Matching: {}", to_match);
+        // println!("Pattern : {:?}", self.start_state);
+
+        let chars: Vec<char> = to_match.chars().collect();
         let mut next_states: Vec<Rc<State>> = vec![];
         let mut current_states: Vec<Rc<State>> = vec![];
 
@@ -466,11 +490,9 @@ impl<'a> RegexPattern<'a> {
         for char in chars.iter() {
             next_states.clear();
 
-            if current_states.len() == 0 {
-                return Ok(false);
-            }
-
             for state in current_states.iter() {
+                // println!("Current : {:?}", state);
+
                 match *state.clone() {
                     State::Simple(atom, ref next) => {
                         if atom.matches(*char) {
@@ -493,7 +515,9 @@ impl<'a> RegexPattern<'a> {
             current_states = next_states.clone();
         }
 
-        return Ok(true);
+        // For pattern to match it needs to reach match state
+        //  before exhausting input string
+        Ok(current_states.iter().any(|s| s.is_match()))
     }
 }
 
@@ -540,7 +564,7 @@ mod tests {
     fn test_fragment_patch() {}
 
     #[test]
-    fn test_regex_pattern_parse_easy() {
+    fn test_regex_pattern_match_easy() {
         let regex = match RegexPattern::new("\\dahoj7") {
             Ok(regex) => regex,
             Err(err) => {
@@ -556,7 +580,7 @@ mod tests {
     }
 
     #[test]
-    fn test_regex_pattern_parse_very_easy() {
+    fn test_regex_pattern_match_very_easy() {
         let regex = match RegexPattern::new("\\d") {
             Ok(regex) => regex,
             Err(err) => {
@@ -577,6 +601,7 @@ mod tests {
         assert!(regex.matches("7").unwrap());
         assert!(regex.matches("8").unwrap());
         assert!(regex.matches("9").unwrap());
-        assert!(!regex.matches("aahoj7").unwrap());
+        assert!(regex.matches("abc_0_xyz").unwrap());
+        assert!(!regex.matches("aahoj").unwrap());
     }
 }
