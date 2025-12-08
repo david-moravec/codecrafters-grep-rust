@@ -16,21 +16,23 @@ enum Token {
     WildCard,
     QuestionMark,
     Plus,
+    Caret,
 }
 
 impl Token {
     pub fn to_char(&self) -> char {
         match self {
-            Token::Character(c) => *c,
-            Token::Escape => '\\',
-            Token::LeftBracket => '(',
-            Token::RightBracket => ')',
-            Token::LeftSquareBracket => '[',
-            Token::RightSquareBracket => ']',
-            Token::Pipe => '|',
-            Token::WildCard => '*',
-            Token::QuestionMark => '?',
-            Token::Plus => '+',
+            Self::Character(c) => *c,
+            Self::Escape => '\\',
+            Self::LeftBracket => '(',
+            Self::RightBracket => ')',
+            Self::LeftSquareBracket => '[',
+            Self::RightSquareBracket => ']',
+            Self::Pipe => '|',
+            Self::WildCard => '*',
+            Self::QuestionMark => '?',
+            Self::Plus => '+',
+            Self::Caret => '^',
         }
     }
 }
@@ -76,6 +78,8 @@ impl<'a> Scanner<'a> {
                 tokens.push(Token::Plus)
             } else if c == '*' {
                 tokens.push(Token::WildCard)
+            } else if c == '^' {
+                tokens.push(Token::Caret)
             }
         }
         return tokens;
@@ -122,21 +126,15 @@ impl RegexAtom {
 #[derive(Clone)]
 enum RegexMatchable {
     PositiveCharGroup(HashSet<RegexAtom>),
+    NegativeCharGroup(HashSet<RegexAtom>),
     Atom(RegexAtom),
 }
 
 impl RegexMatchable {
     pub fn matches(&self, to_match: char) -> bool {
         match self {
-            Self::PositiveCharGroup(atoms) => {
-                for atom in atoms.iter() {
-                    if atom.matches(to_match) {
-                        return true;
-                    }
-                }
-
-                return false;
-            }
+            Self::PositiveCharGroup(atoms) => atoms.iter().any(|a| a.matches(to_match)),
+            Self::NegativeCharGroup(atoms) => !atoms.iter().any(|a| a.matches(to_match)),
             Self::Atom(atom) => atom.matches(to_match),
             _ => unimplemented!(),
         }
@@ -148,11 +146,23 @@ impl Debug for RegexMatchable {
         match self {
             Self::Atom(atom) => write!(f, "{:?}", atom),
             Self::PositiveCharGroup(atoms) => {
+                write!(f, "[")?;
                 for atom in atoms.iter() {
                     if let Err(e) = write!(f, "{:?}", atom) {
                         return Err(e);
                     }
                 }
+                write!(f, "]")?;
+                return Ok(());
+            }
+            Self::NegativeCharGroup(atoms) => {
+                write!(f, "[^")?;
+                for atom in atoms.iter() {
+                    if let Err(e) = write!(f, "{:?}", atom) {
+                        return Err(e);
+                    }
+                }
+                write!(f, "]")?;
                 return Ok(());
             }
         }
@@ -437,17 +447,27 @@ impl<'a> Parser<'a> {
     }
 
     fn positive_char_group(&mut self) -> Result<Fragment> {
-        let state = Rc::new(RefCell::new(StateMut::Simple(
-            RegexMatchable::PositiveCharGroup(self.char_group()?),
-            None,
-        )));
+        self.consume(Token::LeftSquareBracket)?;
+        let state = match self.peek()? {
+            Token::Caret => {
+                self.consume(Token::Caret)?;
+
+                Rc::new(RefCell::new(StateMut::Simple(
+                    RegexMatchable::NegativeCharGroup(self.char_group()?),
+                    None,
+                )))
+            }
+            _ => Rc::new(RefCell::new(StateMut::Simple(
+                RegexMatchable::PositiveCharGroup(self.char_group()?),
+                None,
+            ))),
+        };
+        self.consume(Token::RightSquareBracket)?;
 
         return Ok(Fragment::new(state.clone(), vec![state.clone()]));
     }
 
     fn char_group(&mut self) -> Result<HashSet<RegexAtom>> {
-        self.consume(Token::LeftSquareBracket)?;
-
         let mut atoms: HashSet<RegexAtom> = HashSet::new();
 
         while !self.is_at_end() {
@@ -456,8 +476,6 @@ impl<'a> Parser<'a> {
                 _ => atoms.insert(self.atom()?),
             };
         }
-
-        self.consume(Token::RightSquareBracket)?;
 
         return Ok(atoms);
     }
@@ -745,5 +763,22 @@ mod tests {
         assert!(regex.matches("a1b2c3").unwrap());
         assert!(regex.matches("aahoj").unwrap());
         assert!(!regex.matches("dhoj").unwrap());
+    }
+
+    #[test]
+    fn test_regex_pattern_match_negative_char_group() {
+        let regex = match RegexPattern::new("[^abc]") {
+            Ok(regex) => regex,
+            Err(err) => {
+                println!("{}", err);
+                assert!(false);
+                return;
+            }
+        };
+
+        print!("\n{:?}\n", regex.start_state);
+        assert!(regex.matches("cat").unwrap());
+        assert!(!regex.matches("cab").unwrap());
+        assert!(regex.matches("dog").unwrap());
     }
 }
