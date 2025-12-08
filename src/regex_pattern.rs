@@ -87,6 +87,7 @@ impl RegexAtom {
             Self::Char(c) => *c == to_match,
             Self::CharacterClass(c) => match c {
                 'd' => to_match >= '0' && to_match <= '9',
+                'w' => to_match.is_alphanumeric() || to_match == '_',
                 _ => todo!("Not implemented"),
             },
         }
