@@ -81,6 +81,18 @@ enum RegexAtom {
     Char(char),
 }
 
+impl RegexAtom {
+    pub fn matches(&self, to_match: char) -> bool {
+        match self {
+            Self::Char(c) => *c == to_match,
+            Self::CharacterClass(c) => match c {
+                'd' => to_match >= '0' && to_match <= '9',
+                _ => todo!("Not implemented"),
+            },
+        }
+    }
+}
+
 #[derive(Clone)]
 enum StateMut {
     Simple(RegexAtom, Option<Rc<RefCell<StateMut>>>),
@@ -130,7 +142,7 @@ impl StateMut {
             Self::Match => State::Match,
             Self::Start(state) => {
                 let state = state.unwrap().borrow().clone()._into_state()?;
-                State::Start(Rc::new(state))
+                State::Start(Some(Rc::new(state)))
             }
         };
 
@@ -164,7 +176,20 @@ enum State {
     Simple(RegexAtom, Rc<Self>),
     Split(Rc<Self>, Rc<Self>),
     Match,
-    Start(Rc<Self>),
+    Start(Option<Rc<Self>>),
+}
+
+impl State {
+    pub fn out(&self) -> Vec<Rc<State>> {
+        match self.clone() {
+            next => match next {
+                State::Simple(_, ref_state) => vec![ref_state],
+                State::Split(ref1, ref2) => vec![ref1, ref2],
+                State::Match => vec![],
+                State::Start(state) => vec![state.unwrap()],
+            },
+        }
+    }
 }
 
 impl Debug for State {
@@ -425,6 +450,51 @@ impl<'a> RegexPattern<'a> {
             start_state,
         });
     }
+
+    pub fn matches(&self, to_match: &str) -> Result<bool> {
+        let chars: Vec<char> = to_match.chars().collect();
+        let mut next_states: Vec<Rc<State>> = vec![];
+        let mut current_states: Vec<Rc<State>> = vec![];
+
+        if let State::Start(ref s) = self.start_state {
+            match s {
+                Some(s) => current_states.push(s.clone()),
+                None => return Ok(false),
+            }
+        }
+
+        for char in chars.iter() {
+            next_states.clear();
+
+            if current_states.len() == 0 {
+                return Ok(false);
+            }
+
+            for state in current_states.iter() {
+                match *state.clone() {
+                    State::Simple(atom, ref next) => {
+                        if atom.matches(*char) {
+                            next_states.push(next.clone());
+                        }
+                    }
+                    State::Split(ref next1, ref next2) => {
+                        next_states.push(next1.clone());
+                        next_states.push(next2.clone())
+                    }
+                    State::Match => return Ok(true),
+                    State::Start(_) => {
+                        return Err(anyhow!(
+                            "Invalid regex pattern: another start state encountered"
+                        ))
+                    }
+                }
+            }
+
+            current_states = next_states.clone();
+        }
+
+        return Ok(true);
+    }
 }
 
 #[cfg(test)]
@@ -480,9 +550,33 @@ mod tests {
             }
         };
 
-        let state: State = regex.start_state;
+        print!("\n{:?}\n", regex.start_state);
+        assert!(regex.matches("7ahoj7").unwrap());
+        assert!(!regex.matches("aahoj7").unwrap());
+    }
 
-        print!("\n{:?}\n", state);
-        assert!(false);
+    #[test]
+    fn test_regex_pattern_parse_very_easy() {
+        let regex = match RegexPattern::new("\\d") {
+            Ok(regex) => regex,
+            Err(err) => {
+                println!("{}", err);
+                assert!(false);
+                return;
+            }
+        };
+
+        print!("\n{:?}\n", regex.start_state);
+        assert!(regex.matches("0").unwrap());
+        assert!(regex.matches("1").unwrap());
+        assert!(regex.matches("2").unwrap());
+        assert!(regex.matches("3").unwrap());
+        assert!(regex.matches("4").unwrap());
+        assert!(regex.matches("5").unwrap());
+        assert!(regex.matches("6").unwrap());
+        assert!(regex.matches("7").unwrap());
+        assert!(regex.matches("8").unwrap());
+        assert!(regex.matches("9").unwrap());
+        assert!(!regex.matches("aahoj7").unwrap());
     }
 }

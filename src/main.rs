@@ -1,4 +1,5 @@
 #![allow(dead_code)]
+use regex_pattern::RegexPattern;
 use std::env;
 use std::io;
 use std::process;
@@ -28,10 +29,26 @@ fn main() {
 
     io::stdin().read_line(&mut input_line).unwrap();
 
+    let regex = match RegexPattern::new(&pattern) {
+        Ok(r) => r,
+        Err(e) => {
+            println!("{}", e);
+            process::exit(1);
+        }
+    };
+
     // Uncomment this block to pass the first stage
-    if match_pattern(&input_line, &pattern) {
-        process::exit(0)
-    } else {
-        process::exit(1)
+    match regex.matches(&input_line) {
+        Ok(matches) => {
+            if matches {
+                process::exit(0);
+            } else {
+                process::exit(1);
+            }
+        }
+        Err(e) => {
+            println!("{}", e);
+            process::exit(1);
+        }
     }
 }
