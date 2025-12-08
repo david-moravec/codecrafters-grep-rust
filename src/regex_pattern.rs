@@ -1,5 +1,6 @@
 use anyhow::{anyhow, Result};
 use std::cell::RefCell;
+use std::collections::HashSet;
 use std::fmt::{Debug, Formatter};
 use std::rc::Rc;
 
@@ -9,10 +10,29 @@ enum Token {
     Character(char),
     LeftBracket,
     RightBracket,
+    LeftSquareBracket,
+    RightSquareBracket,
     Pipe,
     WildCard,
     QuestionMark,
     Plus,
+}
+
+impl Token {
+    pub fn to_char(&self) -> char {
+        match self {
+            Token::Character(c) => *c,
+            Token::Escape => '\\',
+            Token::LeftBracket => '(',
+            Token::RightBracket => ')',
+            Token::LeftSquareBracket => '[',
+            Token::RightSquareBracket => ']',
+            Token::Pipe => '|',
+            Token::WildCard => '*',
+            Token::QuestionMark => '?',
+            Token::Plus => '+',
+        }
+    }
 }
 
 struct Scanner<'a> {
@@ -46,6 +66,10 @@ impl<'a> Scanner<'a> {
                 tokens.push(Token::LeftBracket)
             } else if c == ')' {
                 tokens.push(Token::RightBracket)
+            } else if c == '[' {
+                tokens.push(Token::LeftSquareBracket)
+            } else if c == ']' {
+                tokens.push(Token::RightSquareBracket)
             } else if c == '?' {
                 tokens.push(Token::QuestionMark)
             } else if c == '+' {
@@ -75,7 +99,7 @@ impl<'a> Scanner<'a> {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, Hash, Eq, PartialEq, PartialOrd, Ord, Copy)]
 enum RegexAtom {
     CharacterClass(char),
     Char(char),
@@ -84,19 +108,60 @@ enum RegexAtom {
 impl RegexAtom {
     pub fn matches(&self, to_match: char) -> bool {
         match self {
-            Self::Char(c) => *c == to_match,
-            Self::CharacterClass(c) => match c {
+            &Self::Char(c) => c == to_match,
+            &Self::CharacterClass(c) => match c {
                 'd' => to_match >= '0' && to_match <= '9',
                 'w' => to_match.is_alphanumeric() || to_match == '_',
                 _ => todo!("Not implemented"),
             },
+            _ => unimplemented!(),
+        }
+    }
+}
+
+#[derive(Clone)]
+enum RegexMatchable {
+    PositiveCharGroup(HashSet<RegexAtom>),
+    Atom(RegexAtom),
+}
+
+impl RegexMatchable {
+    pub fn matches(&self, to_match: char) -> bool {
+        match self {
+            Self::PositiveCharGroup(atoms) => {
+                for atom in atoms.iter() {
+                    if atom.matches(to_match) {
+                        return true;
+                    }
+                }
+
+                return false;
+            }
+            Self::Atom(atom) => atom.matches(to_match),
+            _ => unimplemented!(),
+        }
+    }
+}
+
+impl Debug for RegexMatchable {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Atom(atom) => write!(f, "{:?}", atom),
+            Self::PositiveCharGroup(atoms) => {
+                for atom in atoms.iter() {
+                    if let Err(e) = write!(f, "{:?}", atom) {
+                        return Err(e);
+                    }
+                }
+                return Ok(());
+            }
         }
     }
 }
 
 #[derive(Clone)]
 enum StateMut {
-    Simple(RegexAtom, Option<Rc<RefCell<StateMut>>>),
+    Simple(RegexMatchable, Option<Rc<RefCell<StateMut>>>),
     Split(Option<Rc<RefCell<StateMut>>>, Option<Rc<RefCell<StateMut>>>),
     Match,
     Start(Option<Rc<RefCell<StateMut>>>),
@@ -174,7 +239,7 @@ impl Debug for StateMut {
 
 #[derive(Clone)]
 enum State {
-    Simple(RegexAtom, Rc<Self>),
+    Simple(RegexMatchable, Rc<Self>),
     Split(Rc<Self>, Rc<Self>),
     Match,
     Start(Option<Rc<Self>>),
@@ -300,6 +365,16 @@ impl<'a> Parser<'a> {
         return self.tokens[self.current - 1];
     }
 
+    fn try_advance(&mut self) -> Result<Token> {
+        match self.tokens.get(self.current + 1).map(|x| *x) {
+            Some(t) => {
+                self.current += 1;
+                Ok(t)
+            }
+            None => Err(anyhow!("End of file reached")),
+        }
+    }
+
     fn advance_if_matches(&mut self, token: Token) -> Option<Token> {
         if self.is_at_end() {
             return None;
@@ -341,15 +416,60 @@ impl<'a> Parser<'a> {
         self.consume(Token::Escape)?;
 
         match self.advance() {
-            Token::Character(c) => Ok(StateMut::Simple(RegexAtom::CharacterClass(c), None)),
+            Token::Character(c) => Ok(StateMut::Simple(
+                RegexMatchable::Atom(RegexAtom::CharacterClass(c)),
+                None,
+            )),
             _ => Err(anyhow!("Expected escaped symbol got {:?}", self.peek()?)),
         }
     }
 
     fn character(&mut self) -> Result<StateMut> {
         match self.advance() {
-            Token::Character(c) => return Ok(StateMut::Simple(RegexAtom::Char(c), None)),
+            Token::Character(c) => {
+                return Ok(StateMut::Simple(
+                    RegexMatchable::Atom(RegexAtom::Char(c)),
+                    None,
+                ))
+            }
             _ => Err(anyhow!("Expected character symbol got {:?}", self.peek()?)),
+        }
+    }
+
+    fn positive_char_group(&mut self) -> Result<Fragment> {
+        let state = Rc::new(RefCell::new(StateMut::Simple(
+            RegexMatchable::PositiveCharGroup(self.char_group()?),
+            None,
+        )));
+
+        return Ok(Fragment::new(state.clone(), vec![state.clone()]));
+    }
+
+    fn char_group(&mut self) -> Result<HashSet<RegexAtom>> {
+        self.consume(Token::LeftSquareBracket)?;
+
+        let mut atoms: HashSet<RegexAtom> = HashSet::new();
+
+        while !self.is_at_end() {
+            match self.peek()? {
+                Token::RightSquareBracket => break,
+                _ => atoms.insert(self.atom()?),
+            };
+        }
+
+        self.consume(Token::RightSquareBracket)?;
+
+        return Ok(atoms);
+    }
+
+    fn atom(&mut self) -> Result<RegexAtom> {
+        match self.advance() {
+            Token::Character(c) => Ok(RegexAtom::Char(c)),
+            Token::Escape => {
+                self.consume(Token::Escape)?;
+                Ok(RegexAtom::Char(self.try_advance()?.to_char()))
+            }
+            token => Err(anyhow!("Expected character or '\\', got {:?}", token)),
         }
     }
 
@@ -414,13 +534,14 @@ impl<'a> Parser<'a> {
     fn bracket_fragment(&mut self) -> Result<Fragment> {
         match self.peek()? {
             Token::LeftBracket => return self.sub_fragment(),
+            Token::LeftSquareBracket => return self.positive_char_group(),
             Token::Escape | Token::Character(_) => return self.fragment_simple(),
             token => Err(anyhow!("Expected bracket/escape/character got {:?}", token)),
         }
     }
 
     fn fragment(&mut self) -> Result<Fragment> {
-        let mut state1 = self.fragment_simple()?;
+        let mut state1 = self.bracket_fragment()?;
 
         if self.is_at_end() {
             return Ok(state1);
@@ -495,7 +616,7 @@ impl<'a> RegexPattern<'a> {
                 // println!("Current : {:?}", state);
 
                 match *state.clone() {
-                    State::Simple(atom, ref next) => {
+                    State::Simple(ref atom, ref next) => {
                         if atom.matches(*char) {
                             next_states.push(next.clone());
                         }
@@ -604,5 +725,25 @@ mod tests {
         assert!(regex.matches("9").unwrap());
         assert!(regex.matches("abc_0_xyz").unwrap());
         assert!(!regex.matches("aahoj").unwrap());
+    }
+
+    #[test]
+    fn test_regex_pattern_match_positive_char_group() {
+        let regex = match RegexPattern::new("[abc]") {
+            Ok(regex) => regex,
+            Err(err) => {
+                println!("{}", err);
+                assert!(false);
+                return;
+            }
+        };
+
+        print!("\n{:?}\n", regex.start_state);
+        assert!(regex.matches("apple").unwrap());
+        assert!(regex.matches("cab").unwrap());
+        assert!(!regex.matches("dog").unwrap());
+        assert!(regex.matches("a1b2c3").unwrap());
+        assert!(regex.matches("aahoj").unwrap());
+        assert!(!regex.matches("dhoj").unwrap());
     }
 }
