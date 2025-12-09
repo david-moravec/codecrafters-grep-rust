@@ -17,6 +17,7 @@ enum Token {
     QuestionMark,
     Plus,
     Caret,
+    Dollar,
 }
 
 impl Token {
@@ -33,6 +34,7 @@ impl Token {
             Self::QuestionMark => '?',
             Self::Plus => '+',
             Self::Caret => '^',
+            Self::Dollar => '$',
         }
     }
 }
@@ -60,7 +62,7 @@ impl<'a> Scanner<'a> {
         while let Some(c) = self.advance() {
             if c == '\\' {
                 tokens.push(Token::Escape)
-            } else if c.is_alphabetic() || c == ' ' {
+            } else if c.is_alphabetic() || c == ' ' || c == '@' {
                 tokens.push(Token::Character(c))
             } else if c == '|' {
                 tokens.push(Token::Pipe);
@@ -80,6 +82,8 @@ impl<'a> Scanner<'a> {
                 tokens.push(Token::WildCard)
             } else if c == '^' {
                 tokens.push(Token::Caret)
+            } else if c == '$' {
+                tokens.push(Token::Dollar)
             }
         }
         return tokens;
@@ -107,6 +111,7 @@ impl<'a> Scanner<'a> {
 enum RegexAtom {
     CharacterClass(char),
     Char(char),
+    EndOfString,
 }
 
 impl RegexAtom {
@@ -503,6 +508,13 @@ impl<'a> Parser<'a> {
                 self.consume(Token::Escape)?;
                 Ok(RegexAtom::Char(self.try_advance()?.to_char()))
             }
+            Token::Dollar => {
+                if self.is_at_end() {
+                    Ok(RegexAtom::EndOfString)
+                } else {
+                    Err(anyhow!("Token '$' can be only at the end of string"))
+                }
+            }
             token => Err(anyhow!("Expected character or '\\', got {:?}", token)),
         }
     }
@@ -824,7 +836,7 @@ mod tests {
     }
 
     #[test]
-    fn test_regex_string_anchors() {
+    fn test_regex_start_of_string_anchor() {
         let regex = match RegexPattern::new("^log") {
             Ok(regex) => regex,
             Err(err) => {
@@ -851,5 +863,36 @@ mod tests {
 
         assert!(regex.matches("125ahoj").unwrap());
         assert!(!regex.matches("12ahoj").unwrap());
+    }
+
+    #[test]
+    fn test_regex_end_of_string_anchor() {
+        let regex = match RegexPattern::new("dog$") {
+            Ok(regex) => regex,
+            Err(err) => {
+                println!("{}", err);
+                assert!(false);
+                return;
+            }
+        };
+
+        print!("\n{:?}\n", regex.start_state);
+        assert!(regex.matches("hotdog").unwrap());
+        assert!(regex.matches("dog").unwrap());
+        assert!(!regex.matches("dogs").unwrap());
+
+        let regex = match RegexPattern::new("\\d\\d\\d$") {
+            Ok(regex) => regex,
+            Err(err) => {
+                println!("{}", err);
+                assert!(false);
+                return;
+            }
+        };
+        print!("\n{:?}\n", regex.start_state);
+
+        assert!(regex.matches("ahoj125").unwrap());
+        assert!(regex.matches("125").unwrap());
+        assert!(!regex.matches("125j").unwrap());
     }
 }
