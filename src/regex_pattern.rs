@@ -111,8 +111,6 @@ impl<'a> Scanner<'a> {
 enum RegexAtom {
     CharacterClass(char),
     Char(char),
-    EndOfString,
-    StartOfString,
 }
 
 impl RegexAtom {
@@ -175,12 +173,19 @@ impl Debug for RegexMatchable {
     }
 }
 
+#[derive(Debug, Clone)]
+enum AnchorPosition {
+    Start,
+    End,
+}
+
 #[derive(Clone)]
 enum StateMut {
     Simple(RegexMatchable, Option<Rc<RefCell<StateMut>>>),
     Split(Option<Rc<RefCell<StateMut>>>, Option<Rc<RefCell<StateMut>>>),
+    Anchor(AnchorPosition, Option<Rc<RefCell<StateMut>>>),
     Match,
-    Start(bool, Option<Rc<RefCell<StateMut>>>),
+    Start(Option<Rc<RefCell<StateMut>>>),
 }
 
 impl StateMut {
@@ -190,14 +195,16 @@ impl StateMut {
                 StateMut::Simple(_, ref_state) => vec![ref_state],
                 StateMut::Split(ref1, ref2) => vec![ref1, ref2],
                 StateMut::Match => vec![],
-                StateMut::Start(_, state) => vec![state],
+                StateMut::Start(state) | StateMut::Anchor(_, state) => vec![state],
             },
         }
     }
 
     pub fn patch(&mut self, next_state: StateMut) -> Result<()> {
         match self {
-            Self::Simple(_, ref mut next) | Self::Start(_, ref mut next) => {
+            Self::Simple(_, ref mut next)
+            | Self::Start(ref mut next)
+            | Self::Anchor(_, ref mut next) => {
                 *next = Some(Rc::new(RefCell::new(next_state)));
                 Ok(())
             }
@@ -222,9 +229,13 @@ impl StateMut {
                 Rc::new(state1.unwrap().borrow().clone()._into_state()?),
             ),
             Self::Match => State::Match,
-            Self::Start(b, state) => {
+            Self::Start(state) => {
                 let state = state.unwrap().borrow().clone()._into_state()?;
-                State::Start(b, Some(Rc::new(state)))
+                State::Start(Some(Rc::new(state)))
+            }
+            Self::Anchor(pos, state) => {
+                let state = state.unwrap().borrow().clone()._into_state()?;
+                State::Anchor(pos, Rc::new(state))
             }
         };
 
@@ -233,7 +244,7 @@ impl StateMut {
 
     pub fn into_state(self) -> Result<Option<State>> {
         match self {
-            Self::Start(_, s) => match s {
+            Self::Start(s) => match s {
                 Some(t) => Ok(Some(t.borrow().clone()._into_state()?)),
                 None => Ok(None),
             },
@@ -246,9 +257,16 @@ impl Debug for StateMut {
     fn fmt(&self, f: &mut Formatter<'_>) -> Result<(), std::fmt::Error> {
         match self {
             StateMut::Match => write!(f, "MATCH"),
-            StateMut::Start(_, next) => write!(f, "{:?}", next),
+            StateMut::Start(next) => write!(f, "{:?}", next),
             StateMut::Simple(atom, next) => write!(f, "{:?}{:?}", atom, next),
             StateMut::Split(n1, n2) => write!(f, "{:?}|{:?}", n1, n2),
+            StateMut::Anchor(pos, n) => {
+                match pos {
+                    AnchorPosition::Start => write!(f, "^")?,
+                    AnchorPosition::End => write!(f, "$")?,
+                };
+                write!(f, "{:?}", n)
+            }
         }
     }
 }
@@ -258,7 +276,8 @@ enum State {
     Simple(RegexMatchable, Rc<Self>),
     Split(Rc<Self>, Rc<Self>),
     Match,
-    Start(bool, Option<Rc<Self>>),
+    Start(Option<Rc<Self>>),
+    Anchor(AnchorPosition, Rc<Self>),
 }
 
 impl State {
@@ -268,7 +287,8 @@ impl State {
                 State::Simple(_, ref_state) => vec![ref_state],
                 State::Split(ref1, ref2) => vec![ref1, ref2],
                 State::Match => vec![],
-                State::Start(_, state) => vec![state.unwrap()],
+                State::Start(state) => vec![state.unwrap()],
+                State::Anchor(_pos, state) => vec![state],
             },
         }
     }
@@ -276,6 +296,10 @@ impl State {
     pub fn is_match(&self) -> bool {
         match self {
             State::Match => true,
+            State::Anchor(pos, n) => match pos {
+                AnchorPosition::Start => false,
+                AnchorPosition::End => n.is_match(),
+            },
             _ => false,
         }
     }
@@ -285,14 +309,16 @@ impl Debug for State {
     fn fmt(&self, f: &mut Formatter<'_>) -> Result<(), std::fmt::Error> {
         match self {
             State::Match => write!(f, "MATCH"),
-            State::Start(should_match, next) => {
-                if *should_match {
-                    write!(f, "^")?;
-                }
-                write!(f, "{:?}", next)
-            }
+            State::Start(next) => write!(f, "{:?}", next),
             State::Simple(atom, next) => write!(f, "{:?}{:?}", atom, next),
             State::Split(n1, n2) => write!(f, "{:?}|{:?}", n1, n2),
+            State::Anchor(pos, n) => {
+                match pos {
+                    AnchorPosition::Start => write!(f, "^")?,
+                    AnchorPosition::End => write!(f, "$")?,
+                };
+                write!(f, "{:?}", n)
+            }
         }
     }
 }
@@ -315,7 +341,9 @@ impl Fragment {
 
     pub fn patch(&mut self, next_fragment: Self) {
         for state in self.out.iter() {
-            if let StateMut::Simple(_, ref mut next_opt) = *state.borrow_mut() {
+            if let StateMut::Simple(_, ref mut next_opt) | StateMut::Anchor(_, ref mut next_opt) =
+                *state.borrow_mut()
+            {
                 *next_opt = Some(next_fragment.state.clone());
             }
         }
@@ -344,15 +372,9 @@ impl<'a> Parser<'a> {
 
     pub fn parse(&mut self) -> Result<State> {
         if self.is_at_end() {
-            return Ok(State::Start(false, None));
+            return Ok(State::Start(None));
         }
 
-        let mut match_start_of_string = false;
-
-        if let Token::Caret = self.peek().unwrap() {
-            self.consume(Token::Caret)?;
-            match_start_of_string = true;
-        }
         let mut fragments: Vec<Fragment> = vec![];
 
         while !self.is_at_end() {
@@ -371,10 +393,7 @@ impl<'a> Parser<'a> {
             current = prev;
         }
 
-        let start = StateMut::Start(
-            match_start_of_string,
-            Some(Rc::new(RefCell::new(current.state.borrow().clone()))),
-        );
+        let start = StateMut::Start(Some(Rc::new(RefCell::new(current.state.borrow().clone()))));
 
         return start._into_state();
     }
@@ -488,18 +507,6 @@ impl<'a> Parser<'a> {
                 self.consume(Token::Escape)?;
                 Ok(RegexAtom::CharacterClass(self.advance().to_char()))
             }
-            Token::Dollar => {
-                self.advance();
-                if self.is_at_end() {
-                    Ok(RegexAtom::EndOfString)
-                } else {
-                    Err(anyhow!("Token '$' can be only at the end of string"))
-                }
-            }
-            Token::Caret => {
-                self.advance();
-                Ok(RegexAtom::StartOfString)
-            }
             token => Err(anyhow!("Expected character or '\\', got {:?}", token)),
         }
     }
@@ -521,10 +528,26 @@ impl<'a> Parser<'a> {
     }
 
     fn state_simple(&mut self) -> Result<Rc<RefCell<StateMut>>> {
-        Ok(Rc::new(RefCell::new(StateMut::Simple(
-            RegexMatchable::Atom(self.atom()?),
-            None,
-        ))))
+        match self.peek()? {
+            Token::Caret => {
+                self.advance();
+                Ok(Rc::new(RefCell::new(StateMut::Anchor(
+                    AnchorPosition::Start,
+                    None,
+                ))))
+            }
+            Token::Dollar => {
+                self.advance();
+                Ok(Rc::new(RefCell::new(StateMut::Anchor(
+                    AnchorPosition::End,
+                    None,
+                ))))
+            }
+            _ => Ok(Rc::new(RefCell::new(StateMut::Simple(
+                RegexMatchable::Atom(self.atom()?),
+                None,
+            )))),
+        }
     }
 
     fn fragment_simple(&mut self) -> Result<Fragment> {
@@ -609,17 +632,13 @@ impl<'a> RegexPattern<'a> {
     }
 
     pub fn matches(&self, to_match: &str) -> Result<bool> {
-        if let State::Start(true, _) = self.start_state {
-            return self.match_from_start(to_match);
-        }
-
         return self.try_match_starting_from_each_char(to_match);
     }
 
     fn try_match_starting_from_each_char(&self, to_match: &str) -> Result<bool> {
         let chars: Vec<char> = to_match.chars().collect();
         for i in 0..chars.len() {
-            match self.match_from_start(&chars[i..].iter().collect::<String>()) {
+            match self.match_starting_from(&chars[i..].iter().collect::<String>(), i) {
                 Ok(matches) => {
                     if matches {
                         return Ok(true);
@@ -632,7 +651,7 @@ impl<'a> RegexPattern<'a> {
         return Ok(false);
     }
 
-    fn match_from_start(&self, to_match: &str) -> Result<bool> {
+    fn match_starting_from(&self, to_match: &str, starting_from: usize) -> Result<bool> {
         // println!("Matching: {}", to_match);
         // println!("Pattern : {:?}", self.start_state);
 
@@ -640,14 +659,14 @@ impl<'a> RegexPattern<'a> {
         let mut next_states: Vec<Rc<State>> = vec![];
         let mut current_states: Vec<Rc<State>> = vec![];
 
-        if let State::Start(_, ref s) = self.start_state {
+        if let State::Start(ref s) = self.start_state {
             match s {
                 Some(s) => current_states.push(s.clone()),
                 None => return Ok(false),
             }
         }
 
-        for char in chars.iter() {
+        for c in chars.iter() {
             next_states.clear();
 
             for state in current_states.iter() {
@@ -655,7 +674,7 @@ impl<'a> RegexPattern<'a> {
 
                 match *state.clone() {
                     State::Simple(ref atom, ref next) => {
-                        if atom.matches(*char) {
+                        if atom.matches(*c) {
                             next_states.push(next.clone());
                         }
                     }
@@ -664,18 +683,30 @@ impl<'a> RegexPattern<'a> {
                         next_states.push(next2.clone())
                     }
                     State::Match => return Ok(true),
-                    State::Start(_, _) => {
+                    State::Start(_) => {
                         return Err(anyhow!(
                             "Invalid regex pattern: another start state encountered"
                         ))
                     }
+                    State::Anchor(ref pos, ref next) => match pos {
+                        AnchorPosition::Start => {
+                            if starting_from == 0 {
+                                if let State::Simple(ref atom, ref next) = *next.clone() {
+                                    if atom.matches(*c) {
+                                        next_states.push(next.clone());
+                                    }
+                                }
+                            }
+                        }
+                        AnchorPosition::End => {}
+                    },
                 }
             }
 
             current_states = next_states.clone();
         }
 
-        // For pattern to match it needs to reach match state
+        // For pattern to match it needs to reach match state or end of string state
         //  before exhausting input string
         Ok(current_states.iter().any(|s| s.is_match()))
     }
