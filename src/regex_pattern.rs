@@ -107,7 +107,7 @@ impl<'a> Scanner<'a> {
     }
 }
 
-#[derive(Debug, Clone, Hash, Eq, PartialEq, PartialOrd, Ord, Copy)]
+#[derive(Clone, Hash, Eq, PartialEq, PartialOrd, Ord, Copy)]
 enum RegexAtom {
     CharacterClass(char),
     Char(char),
@@ -123,6 +123,15 @@ impl RegexAtom {
                 _ => todo!("Not implemented"),
             },
             _ => unimplemented!(),
+        }
+    }
+}
+
+impl Debug for RegexAtom {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::CharacterClass(c) => write!(f, "\\{}", c),
+            Self::Char(c) => write!(f, "{}", c),
         }
     }
 }
@@ -257,7 +266,7 @@ impl StateMut {
 impl Debug for StateMut {
     fn fmt(&self, f: &mut Formatter<'_>) -> Result<(), std::fmt::Error> {
         match self {
-            StateMut::Match => write!(f, "MATCH"),
+            StateMut::Match => write!(f, " -> MATCH"),
             StateMut::Start(next) => write!(f, "{:?}", next),
             StateMut::Simple(atom, next) => write!(f, "{:?}{:?}", atom, next),
             StateMut::Split(n1, n2) => write!(f, "{:?}|{:?}", n1, n2),
@@ -274,21 +283,27 @@ enum State {
 }
 
 impl State {
-    pub fn out(&self) -> Vec<Rc<Self>> {
-        match self.clone() {
-            next => match next {
-                State::Simple(_, ref_state) => vec![ref_state],
-                State::Split(ref1, ref2) => vec![ref1, ref2],
-                State::Match => vec![],
-                State::Start(state) => vec![state.unwrap()],
-            },
-        }
-    }
-
     pub fn is_match(&self) -> bool {
         match self {
             State::Match => true,
             _ => false,
+        }
+    }
+
+    pub fn matches(&self, c: char, index: usize) -> Option<Vec<Rc<Self>>> {
+        match self {
+            State::Simple(ref atom, ref next) => {
+                if atom.matches(c, index) {
+                    Some(vec![next.clone()])
+                } else {
+                    None
+                }
+            }
+            State::Split(ref next1, ref next2) => return Some(vec![next1.clone(), next2.clone()]),
+            State::Match => return None,
+            State::Start(_) => {
+                panic!("Start should be never reached during matching")
+            }
         }
     }
 }
@@ -296,7 +311,7 @@ impl State {
 impl Debug for State {
     fn fmt(&self, f: &mut Formatter<'_>) -> Result<(), std::fmt::Error> {
         match self {
-            State::Match => write!(f, "MATCH"),
+            State::Match => write!(f, " -> MATCH"),
             State::Start(next) => write!(f, "{:?}", next),
             State::Simple(atom, next) => write!(f, "{:?}{:?}", atom, next),
             State::Split(n1, n2) => write!(f, "{:?}|{:?}", n1, n2),
@@ -649,23 +664,13 @@ impl<'a> RegexPattern<'a> {
             next_states.clear();
 
             for state in current_states.iter() {
-                // println!("Current : {:?}", state);
+                if let State::Match = **state {
+                    return Ok(true);
+                }
 
-                match *state.clone() {
-                    State::Simple(ref atom, ref next) => {
-                        if atom.matches(*c, starting_from) {
-                            next_states.push(next.clone());
-                        }
-                    }
-                    State::Split(ref next1, ref next2) => {
-                        next_states.push(next1.clone());
-                        next_states.push(next2.clone())
-                    }
-                    State::Match => return Ok(true),
-                    State::Start(_) => {
-                        return Err(anyhow!(
-                            "Invalid regex pattern: another start state encountered"
-                        ))
+                if let Some(next) = state.matches(*c, starting_from) {
+                    for n in next.iter() {
+                        next_states.push(n.clone());
                     }
                 }
             }
@@ -682,6 +687,26 @@ impl<'a> RegexPattern<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn test_matches(match_res: Result<bool>) {
+        match match_res {
+            Ok(b) => assert!(b),
+            Err(e) => {
+                println!("{}", e);
+                assert!(false);
+            }
+        }
+    }
+
+    fn test_not_matches(match_res: Result<bool>) {
+        match match_res {
+            Ok(b) => assert!(!b),
+            Err(e) => {
+                println!("{}", e);
+                assert!(false);
+            }
+        }
+    }
 
     #[test]
     fn test_regex_pattern_tokenize_easy() {
@@ -733,8 +758,8 @@ mod tests {
         };
 
         print!("\n{:?}\n", regex.start_state);
-        assert!(regex.matches("7ahoj7").unwrap());
-        assert!(!regex.matches("aahoj7").unwrap());
+        test_matches(regex.matches("7ahoj7"));
+        test_not_matches(regex.matches("aahoj7"));
     }
 
     #[test]
@@ -749,18 +774,18 @@ mod tests {
         };
 
         print!("\n{:?}\n", regex.start_state);
-        assert!(regex.matches("0").unwrap());
-        assert!(regex.matches("1").unwrap());
-        assert!(regex.matches("2").unwrap());
-        assert!(regex.matches("3").unwrap());
-        assert!(regex.matches("4").unwrap());
-        assert!(regex.matches("5").unwrap());
-        assert!(regex.matches("6").unwrap());
-        assert!(regex.matches("7").unwrap());
-        assert!(regex.matches("8").unwrap());
-        assert!(regex.matches("9").unwrap());
-        assert!(regex.matches("abc_0_xyz").unwrap());
-        assert!(!regex.matches("aahoj").unwrap());
+        test_matches(regex.matches("0"));
+        test_matches(regex.matches("1"));
+        test_matches(regex.matches("2"));
+        test_matches(regex.matches("3"));
+        test_matches(regex.matches("4"));
+        test_matches(regex.matches("5"));
+        test_matches(regex.matches("6"));
+        test_matches(regex.matches("7"));
+        test_matches(regex.matches("8"));
+        test_matches(regex.matches("9"));
+        test_matches(regex.matches("abc_0_xyz"));
+        test_not_matches(regex.matches("aahoj"));
     }
 
     #[test]
