@@ -112,6 +112,7 @@ enum RegexAtom {
     CharacterClass(char),
     Char(char),
     EndOfString,
+    StartOfString,
 }
 
 impl RegexAtom {
@@ -443,30 +444,6 @@ impl<'a> Parser<'a> {
         return self.tokens.get(self.current + 1).map(|x| *x);
     }
 
-    fn escaped(&mut self) -> Result<StateMut> {
-        self.consume(Token::Escape)?;
-
-        match self.advance() {
-            Token::Character(c) => Ok(StateMut::Simple(
-                RegexMatchable::Atom(RegexAtom::CharacterClass(c)),
-                None,
-            )),
-            _ => Err(anyhow!("Expected escaped symbol got {:?}", self.peek()?)),
-        }
-    }
-
-    fn character(&mut self) -> Result<StateMut> {
-        match self.advance() {
-            Token::Character(c) => {
-                return Ok(StateMut::Simple(
-                    RegexMatchable::Atom(RegexAtom::Char(c)),
-                    None,
-                ))
-            }
-            _ => Err(anyhow!("Expected character symbol got {:?}", self.peek()?)),
-        }
-    }
-
     fn positive_char_group(&mut self) -> Result<Fragment> {
         self.consume(Token::LeftSquareBracket)?;
         let state = match self.peek()? {
@@ -502,18 +479,26 @@ impl<'a> Parser<'a> {
     }
 
     fn atom(&mut self) -> Result<RegexAtom> {
-        match self.advance() {
-            Token::Character(c) => Ok(RegexAtom::Char(c)),
+        match self.peek()? {
+            Token::Character(c) => {
+                self.advance();
+                Ok(RegexAtom::Char(c))
+            }
             Token::Escape => {
                 self.consume(Token::Escape)?;
-                Ok(RegexAtom::Char(self.try_advance()?.to_char()))
+                Ok(RegexAtom::CharacterClass(self.advance().to_char()))
             }
             Token::Dollar => {
+                self.advance();
                 if self.is_at_end() {
                     Ok(RegexAtom::EndOfString)
                 } else {
                     Err(anyhow!("Token '$' can be only at the end of string"))
                 }
+            }
+            Token::Caret => {
+                self.advance();
+                Ok(RegexAtom::StartOfString)
             }
             token => Err(anyhow!("Expected character or '\\', got {:?}", token)),
         }
@@ -536,11 +521,10 @@ impl<'a> Parser<'a> {
     }
 
     fn state_simple(&mut self) -> Result<Rc<RefCell<StateMut>>> {
-        Ok(Rc::new(RefCell::new(match self.peek()? {
-            Token::Escape => self.escaped(),
-            Token::Character(_) => self.character(),
-            token => Err(anyhow!("Expected escaped char or char got {:?}", token)),
-        }?)))
+        Ok(Rc::new(RefCell::new(StateMut::Simple(
+            RegexMatchable::Atom(self.atom()?),
+            None,
+        ))))
     }
 
     fn fragment_simple(&mut self) -> Result<Fragment> {
@@ -548,7 +532,7 @@ impl<'a> Parser<'a> {
 
         while !self.is_at_end() {
             match self.peek()? {
-                Token::Character(_) | Token::Escape => {
+                Token::Character(_) | Token::Escape | Token::Dollar | Token::Caret => {
                     states.push(self.state_simple()?);
                 }
                 _ => break,
@@ -581,7 +565,9 @@ impl<'a> Parser<'a> {
         match self.peek()? {
             Token::LeftBracket => return self.sub_fragment(),
             Token::LeftSquareBracket => return self.positive_char_group(),
-            Token::Escape | Token::Character(_) => return self.fragment_simple(),
+            Token::Escape | Token::Character(_) | Token::Caret | Token::Dollar => {
+                return self.fragment_simple()
+            }
             token => Err(anyhow!("Expected bracket/escape/character got {:?}", token)),
         }
     }
@@ -828,6 +814,13 @@ mod tests {
         };
 
         print!("\n{:?}\n", regex.start_state);
+        match regex.matches("1 apple") {
+            Ok(b) => assert!(b),
+            Err(e) => {
+                println!("{}", e);
+                assert!(false);
+            }
+        }
         assert!(regex.matches("1 apple").unwrap());
         assert!(!regex.matches("1 appx").unwrap());
         assert!(!regex.matches("apple").unwrap());
