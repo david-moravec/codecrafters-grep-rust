@@ -114,12 +114,12 @@ enum RegexAtom {
 }
 
 impl RegexAtom {
-    pub fn matches(&self, to_match: char) -> bool {
+    pub fn matches(&self, c: char) -> bool {
         match self {
-            &Self::Char(c) => c == to_match,
-            &Self::CharacterClass(c) => match c {
-                'd' => to_match >= '0' && to_match <= '9',
-                'w' => to_match.is_alphanumeric() || to_match == '_',
+            &Self::Char(ch) => c == ch,
+            &Self::CharacterClass(ch) => match ch {
+                'd' => c >= '0' && c <= '9',
+                'w' => c.is_alphanumeric() || c == '_',
                 _ => todo!("Not implemented"),
             },
             _ => unimplemented!(),
@@ -127,20 +127,30 @@ impl RegexAtom {
     }
 }
 
+#[derive(Debug, Clone)]
+enum Anchor {
+    Start,
+    End,
+}
+
 #[derive(Clone)]
 enum RegexMatchable {
     PositiveCharGroup(HashSet<RegexAtom>),
     NegativeCharGroup(HashSet<RegexAtom>),
     Atom(RegexAtom),
+    Anchor(Anchor),
 }
 
 impl RegexMatchable {
-    pub fn matches(&self, to_match: char) -> bool {
+    pub fn matches(&self, c: char, index: usize) -> bool {
         match self {
-            Self::PositiveCharGroup(atoms) => atoms.iter().any(|a| a.matches(to_match)),
-            Self::NegativeCharGroup(atoms) => !atoms.iter().any(|a| a.matches(to_match)),
-            Self::Atom(atom) => atom.matches(to_match),
-            _ => unimplemented!(),
+            Self::PositiveCharGroup(atoms) => atoms.iter().any(|a| a.matches(c)),
+            Self::NegativeCharGroup(atoms) => !atoms.iter().any(|a| a.matches(c)),
+            Self::Atom(atom) => atom.matches(c),
+            Self::Anchor(anchor) => match anchor {
+                Anchor::Start => index == 0,
+                Anchor::End => unreachable!("End of string char should always match the previous state. Anchor end is matched after all chars have been exhousted in final is_match"),
+            },
         }
     }
 }
@@ -169,21 +179,18 @@ impl Debug for RegexMatchable {
                 write!(f, "]")?;
                 return Ok(());
             }
+            Self::Anchor(anchor) => match anchor {
+                Anchor::Start => write!(f, "^"),
+                Anchor::End => write!(f, "$"),
+            },
         }
     }
-}
-
-#[derive(Debug, Clone)]
-enum AnchorPosition {
-    Start,
-    End,
 }
 
 #[derive(Clone)]
 enum StateMut {
     Simple(RegexMatchable, Option<Rc<RefCell<StateMut>>>),
     Split(Option<Rc<RefCell<StateMut>>>, Option<Rc<RefCell<StateMut>>>),
-    Anchor(AnchorPosition, Option<Rc<RefCell<StateMut>>>),
     Match,
     Start(Option<Rc<RefCell<StateMut>>>),
 }
@@ -195,16 +202,14 @@ impl StateMut {
                 StateMut::Simple(_, ref_state) => vec![ref_state],
                 StateMut::Split(ref1, ref2) => vec![ref1, ref2],
                 StateMut::Match => vec![],
-                StateMut::Start(state) | StateMut::Anchor(_, state) => vec![state],
+                StateMut::Start(state) => vec![state],
             },
         }
     }
 
     pub fn patch(&mut self, next_state: StateMut) -> Result<()> {
         match self {
-            Self::Simple(_, ref mut next)
-            | Self::Start(ref mut next)
-            | Self::Anchor(_, ref mut next) => {
+            Self::Simple(_, ref mut next) | Self::Start(ref mut next) => {
                 *next = Some(Rc::new(RefCell::new(next_state)));
                 Ok(())
             }
@@ -233,10 +238,6 @@ impl StateMut {
                 let state = state.unwrap().borrow().clone()._into_state()?;
                 State::Start(Some(Rc::new(state)))
             }
-            Self::Anchor(pos, state) => {
-                let state = state.unwrap().borrow().clone()._into_state()?;
-                State::Anchor(pos, Rc::new(state))
-            }
         };
 
         Ok(result)
@@ -260,13 +261,6 @@ impl Debug for StateMut {
             StateMut::Start(next) => write!(f, "{:?}", next),
             StateMut::Simple(atom, next) => write!(f, "{:?}{:?}", atom, next),
             StateMut::Split(n1, n2) => write!(f, "{:?}|{:?}", n1, n2),
-            StateMut::Anchor(pos, n) => {
-                match pos {
-                    AnchorPosition::Start => write!(f, "^")?,
-                    AnchorPosition::End => write!(f, "$")?,
-                };
-                write!(f, "{:?}", n)
-            }
         }
     }
 }
@@ -277,18 +271,16 @@ enum State {
     Split(Rc<Self>, Rc<Self>),
     Match,
     Start(Option<Rc<Self>>),
-    Anchor(AnchorPosition, Rc<Self>),
 }
 
 impl State {
-    pub fn out(&self) -> Vec<Rc<State>> {
+    pub fn out(&self) -> Vec<Rc<Self>> {
         match self.clone() {
             next => match next {
                 State::Simple(_, ref_state) => vec![ref_state],
                 State::Split(ref1, ref2) => vec![ref1, ref2],
                 State::Match => vec![],
                 State::Start(state) => vec![state.unwrap()],
-                State::Anchor(_pos, state) => vec![state],
             },
         }
     }
@@ -296,10 +288,6 @@ impl State {
     pub fn is_match(&self) -> bool {
         match self {
             State::Match => true,
-            State::Anchor(pos, n) => match pos {
-                AnchorPosition::Start => false,
-                AnchorPosition::End => n.is_match(),
-            },
             _ => false,
         }
     }
@@ -312,13 +300,6 @@ impl Debug for State {
             State::Start(next) => write!(f, "{:?}", next),
             State::Simple(atom, next) => write!(f, "{:?}{:?}", atom, next),
             State::Split(n1, n2) => write!(f, "{:?}|{:?}", n1, n2),
-            State::Anchor(pos, n) => {
-                match pos {
-                    AnchorPosition::Start => write!(f, "^")?,
-                    AnchorPosition::End => write!(f, "$")?,
-                };
-                write!(f, "{:?}", n)
-            }
         }
     }
 }
@@ -341,9 +322,7 @@ impl Fragment {
 
     pub fn patch(&mut self, next_fragment: Self) {
         for state in self.out.iter() {
-            if let StateMut::Simple(_, ref mut next_opt) | StateMut::Anchor(_, ref mut next_opt) =
-                *state.borrow_mut()
-            {
+            if let StateMut::Simple(_, ref mut next_opt) = *state.borrow_mut() {
                 *next_opt = Some(next_fragment.state.clone());
             }
         }
@@ -531,15 +510,15 @@ impl<'a> Parser<'a> {
         match self.peek()? {
             Token::Caret => {
                 self.advance();
-                Ok(Rc::new(RefCell::new(StateMut::Anchor(
-                    AnchorPosition::Start,
+                Ok(Rc::new(RefCell::new(StateMut::Simple(
+                    RegexMatchable::Anchor(Anchor::Start),
                     None,
                 ))))
             }
             Token::Dollar => {
                 self.advance();
-                Ok(Rc::new(RefCell::new(StateMut::Anchor(
-                    AnchorPosition::End,
+                Ok(Rc::new(RefCell::new(StateMut::Simple(
+                    RegexMatchable::Anchor(Anchor::End),
                     None,
                 ))))
             }
@@ -674,7 +653,7 @@ impl<'a> RegexPattern<'a> {
 
                 match *state.clone() {
                     State::Simple(ref atom, ref next) => {
-                        if atom.matches(*c) {
+                        if atom.matches(*c, starting_from) {
                             next_states.push(next.clone());
                         }
                     }
@@ -688,18 +667,6 @@ impl<'a> RegexPattern<'a> {
                             "Invalid regex pattern: another start state encountered"
                         ))
                     }
-                    State::Anchor(ref pos, ref next) => match pos {
-                        AnchorPosition::Start => {
-                            if starting_from == 0 {
-                                if let State::Simple(ref atom, ref next) = *next.clone() {
-                                    if atom.matches(*c) {
-                                        next_states.push(next.clone());
-                                    }
-                                }
-                            }
-                        }
-                        AnchorPosition::End => {}
-                    },
                 }
             }
 
