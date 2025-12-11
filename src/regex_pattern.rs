@@ -109,7 +109,7 @@ impl<'a> Scanner<'a> {
 
 #[derive(Clone, Hash, Eq, PartialEq, PartialOrd, Ord, Copy)]
 enum RegexAtom {
-    CharacterClass(char),
+    Escaped(char),
     Char(char),
 }
 
@@ -117,12 +117,11 @@ impl RegexAtom {
     pub fn matches(&self, c: char) -> bool {
         match self {
             &Self::Char(ch) => c == ch,
-            &Self::CharacterClass(ch) => match ch {
+            &Self::Escaped(ch) => match ch {
                 'd' => c >= '0' && c <= '9',
                 'w' => c.is_alphanumeric() || c == '_',
-                _ => todo!("Not implemented"),
+                _ => c == ch,
             },
-            _ => unimplemented!(),
         }
     }
 }
@@ -130,7 +129,7 @@ impl RegexAtom {
 impl Debug for RegexAtom {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::CharacterClass(c) => write!(f, "\\{}", c),
+            Self::Escaped(c) => write!(f, "\\{}", c),
             Self::Char(c) => write!(f, "{}", c),
         }
     }
@@ -513,7 +512,7 @@ impl<'a> Parser<'a> {
             }
             Token::Escape => {
                 self.consume(Token::Escape)?;
-                Ok(RegexAtom::CharacterClass(self.advance().to_char()))
+                Ok(RegexAtom::Escaped(self.advance().to_char()))
             }
             token => Err(anyhow!("Expected character or '\\', got {:?}", token)),
         }
@@ -865,6 +864,27 @@ mod tests {
         assert!(!regex.matches("apple").unwrap());
         assert!(!regex.matches(" apple").unwrap());
         assert!(!regex.matches("x apple").unwrap());
+    }
+
+    #[test]
+    fn test_regex_combine_special() {
+        let regex = match RegexPattern::new("\\d\\\\d\\\\d apples") {
+            Ok(regex) => regex,
+            Err(err) => {
+                println!("{}", err);
+                assert!(false);
+                return;
+            }
+        };
+
+        print!("\n{:?}\n", regex.start_state);
+        match regex.matches("sally has 12 apples") {
+            Ok(b) => assert!(!b),
+            Err(e) => {
+                println!("{}", e);
+                assert!(false);
+            }
+        }
     }
 
     #[test]
