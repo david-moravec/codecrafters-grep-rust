@@ -158,7 +158,7 @@ impl RegexMatchable {
             Self::Atom(atom) => atom.matches(c),
             Self::Anchor(anchor) => match anchor {
                 Anchor::Start => index == 0,
-                Anchor::End => unreachable!("End of string char should always match the previous state. Anchor end is matched after all chars have been exhousted in final is_match"),
+                Anchor::End => false,
             },
         }
     }
@@ -283,9 +283,20 @@ enum State {
 }
 
 impl State {
-    pub fn is_match(&self) -> bool {
+    pub fn check_is_match_after_reaching_end_of_input(&self) -> bool {
         match self {
             State::Match => true,
+            State::Simple(atom, next) => {
+                if let RegexMatchable::Anchor(pos) = atom {
+                    if let Anchor::End = pos {
+                        next.check_is_match_after_reaching_end_of_input()
+                    } else {
+                        false
+                    }
+                } else {
+                    false
+                }
+            }
             _ => false,
         }
     }
@@ -294,6 +305,9 @@ impl State {
         match self {
             State::Simple(ref atom, ref next) => {
                 if atom.matches(c, index) {
+                    if let RegexMatchable::Anchor(_) = atom {
+                        return next.matches(c, index);
+                    }
                     Some(vec![next.clone()])
                 } else {
                     None
@@ -680,7 +694,9 @@ impl<'a> RegexPattern<'a> {
 
         // For pattern to match it needs to reach match state or end of string state
         //  before exhausting input string
-        Ok(current_states.iter().any(|s| s.is_match()))
+        Ok(current_states
+            .iter()
+            .any(|s| s.check_is_match_after_reaching_end_of_input()))
     }
 }
 
