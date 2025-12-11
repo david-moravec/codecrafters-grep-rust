@@ -63,7 +63,7 @@ impl<'a> Scanner<'a> {
         while let Some(c) = self.advance() {
             if c == '\\' {
                 tokens.push(Token::Escape)
-            } else if c.is_alphabetic() || c == ' ' || c == '@' {
+            } else if c.is_alphabetic() || c == '_' || c == ' ' || c == '@' {
                 tokens.push(Token::Character(c))
             } else if c == '|' {
                 tokens.push(Token::Pipe);
@@ -197,132 +197,22 @@ impl Debug for RegexMatchable {
 }
 
 #[derive(Clone)]
-enum StateKindMut {
-    Simple(RegexMatchable, Option<Rc<RefCell<StateKindMut>>>),
-    Split(
-        Option<Rc<RefCell<StateKindMut>>>,
-        Option<Rc<RefCell<StateKindMut>>>,
-    ),
-    Match,
-    Start(Option<Rc<RefCell<StateKindMut>>>),
-}
-
-impl StateKindMut {
-    pub fn out(&self) -> Vec<Option<Rc<RefCell<StateKindMut>>>> {
-        match self.clone() {
-            next => match next {
-                StateKindMut::Simple(_, ref_state) => vec![ref_state],
-                StateKindMut::Split(ref1, ref2) => vec![ref1, ref2],
-                StateKindMut::Match => vec![],
-                StateKindMut::Start(state) => vec![state],
-            },
-        }
-    }
-
-    pub fn patch(&mut self, next_state: StateKindMut) -> Result<()> {
-        match self {
-            Self::Simple(_, ref mut next) | Self::Start(ref mut next) => {
-                *next = Some(Rc::new(RefCell::new(next_state)));
-                Ok(())
-            }
-            Self::Split(ref mut next1, ref mut next2) => {
-                *next1 = Some(Rc::new(RefCell::new(next_state.clone())));
-                *next2 = Some(Rc::new(RefCell::new(next_state)));
-                Ok(())
-            }
-            Self::Match => Err(anyhow!("Cannot patch mathed State")),
-        }
-    }
-
-    fn _into_state(self) -> Result<State> {
-        let result = match self {
-            Self::Simple(atom, state) => {
-                let state = state.unwrap().borrow().clone()._into_state()?;
-
-                StateKind::Simple(atom, Rc::new(state))
-            }
-            Self::Split(state1, state2) => StateKind::Split(
-                Rc::new(state2.unwrap().borrow().clone()._into_state()?),
-                Rc::new(state1.unwrap().borrow().clone()._into_state()?),
-            ),
-            Self::Match => StateKind::Match,
-            Self::Start(state) => {
-                let state = state.unwrap().borrow().clone()._into_state()?;
-                StateKind::Start(Some(Rc::new(state)))
-            }
-        };
-
-        Ok(State::new(result))
-    }
-
-    pub fn into_state(self) -> Result<Option<State>> {
-        match self {
-            Self::Start(s) => match s {
-                Some(t) => Ok(Some(t.borrow().clone()._into_state()?)),
-                None => Ok(None),
-            },
-            _ => Err(anyhow!("Can transform only from StateBuilder::Start")),
-        }
-    }
-}
-
-impl Debug for StateKindMut {
-    fn fmt(&self, f: &mut Formatter<'_>) -> Result<(), std::fmt::Error> {
-        match self {
-            StateKindMut::Match => write!(f, " -> MATCH"),
-            StateKindMut::Start(next) => write!(f, "{:?}", next),
-            StateKindMut::Simple(atom, next) => write!(f, "{:?}{:?}", atom, next),
-            StateKindMut::Split(n1, n2) => write!(f, "{:?}|{:?}", n1, n2),
-        }
-    }
-}
-
-#[derive(Clone)]
 enum StateKind {
-    Simple(RegexMatchable, Rc<State>),
-    Split(Rc<State>, Rc<State>),
+    Simple(RegexMatchable, Option<Rc<RefCell<State>>>),
+    Split(Option<Rc<RefCell<State>>>, Option<Rc<RefCell<State>>>),
     Match,
-    Start(Option<Rc<State>>),
+    Start(Option<Rc<RefCell<State>>>),
 }
 
 impl StateKind {
-    pub fn check_is_match_after_reaching_end_of_input(&self) -> bool {
-        match self {
-            StateKind::Match => true,
-            StateKind::Simple(atom, next) => {
-                if let RegexMatchable::Anchor(pos) = atom {
-                    if let Anchor::End = pos {
-                        next.kind.check_is_match_after_reaching_end_of_input()
-                    } else {
-                        false
-                    }
-                } else {
-                    false
-                }
-            }
-            _ => false,
-        }
-    }
-
-    pub fn matches(&self, c: char, index: usize) -> Option<Vec<Rc<State>>> {
-        match self {
-            StateKind::Simple(ref atom, ref next) => {
-                if atom.matches(c, index) {
-                    if let RegexMatchable::Anchor(_) = atom {
-                        return next.kind.matches(c, index);
-                    }
-                    Some(vec![next.clone()])
-                } else {
-                    None
-                }
-            }
-            StateKind::Split(ref next1, ref next2) => {
-                return Some(vec![next1.clone(), next2.clone()])
-            }
-            StateKind::Match => return None,
-            StateKind::Start(_) => {
-                panic!("Start should be never reached during matching")
-            }
+    pub fn out(&self) -> Vec<Option<Rc<RefCell<State>>>> {
+        match self.clone() {
+            next => match next {
+                StateKind::Simple(_, ref_state) => vec![ref_state],
+                StateKind::Split(ref1, ref2) => vec![ref1, ref2],
+                StateKind::Match => vec![],
+                StateKind::Start(state) => vec![state],
+            },
         }
     }
 }
@@ -340,6 +230,7 @@ impl Debug for StateKind {
 
 static mut STATE_ID: usize = 0;
 
+#[derive(Clone)]
 struct State {
     kind: StateKind,
     id: usize,
@@ -356,14 +247,141 @@ impl State {
         }
     }
 
-    pub fn matches(&self, c: char, index: usize) -> Option<Vec<Rc<Self>>> {
-        self.kind.matches(c, index)
+    pub fn patch(&mut self, next_state: Rc<RefCell<State>>) -> Result<()> {
+        match self.kind {
+            StateKind::Simple(_, ref mut next) | StateKind::Start(ref mut next) => {
+                if let None = next {
+                    *next = Some(next_state);
+                    return Ok(());
+                }
+                Err(anyhow!("State is already connected"))
+            }
+            StateKind::Split(ref mut next1, ref mut next2) => {
+                if next1.is_some() && next2.is_some() {
+                    return Err(anyhow!("State1 or State2 is already connected"));
+                }
+                if let None = next1 {
+                    *next1 = Some(next_state.clone());
+                }
+                if let None = next2 {
+                    *next2 = Some(next_state);
+                }
+                Ok(())
+            }
+            StateKind::Match => Err(anyhow!("Cannot patch mathed State")),
+        }
+    }
+
+    pub fn patch_multiple_states_by_self(self, list_states: Vec<Rc<RefCell<Self>>>) -> Result<()> {
+        let rc_self = Rc::new(RefCell::new(self));
+
+        for state in list_states {
+            state.borrow_mut().patch(rc_self.clone())?
+        }
+
+        Ok(())
     }
 }
 
 impl Debug for State {
     fn fmt(&self, f: &mut Formatter<'_>) -> Result<(), std::fmt::Error> {
-        write!(f, "{:?}", self.kind)
+        match &self.kind {
+            StateKind::Split(state1, state2) => {
+                if state1.clone().is_some_and(|s| s.borrow().id == self.id) {
+                    return write!(f, "*{:?}", state2.as_ref().unwrap().borrow());
+                }
+
+                if state2.clone().is_some_and(|s| s.borrow().id == self.id) {
+                    return write!(f, "*{:?}", state1.as_ref().unwrap().borrow());
+                }
+
+                Ok(())
+            }
+            StateKind::Start(state) => {
+                if let StateKind::Split(ref state1, ref state2) =
+                    state.as_ref().unwrap().borrow().kind
+                {
+                    if state1.clone().is_some_and(|s| s.borrow().id == self.id) {
+                        return write!(f, "+{:?}", state2.as_ref().unwrap().borrow());
+                    }
+
+                    if state2.clone().is_some_and(|s| s.borrow().id == self.id) {
+                        return write!(f, "+{:?}", state1.as_ref().unwrap().borrow());
+                    }
+
+                    Ok(())
+                } else {
+                    write!(f, "{:?}", state.as_ref().unwrap().borrow())
+                }
+            }
+            StateKind::Simple(matchable, state) => {
+                write!(f, "{:?}{:?}", matchable, state.as_ref().unwrap().borrow())
+            }
+            StateKind::Match => write!(f, " -> MATCH"),
+        }
+    }
+}
+
+impl StateKind {
+    pub fn check_is_match_after_reaching_end_of_input(&self) -> bool {
+        match self {
+            Self::Match => true,
+            Self::Simple(atom, next) => {
+                if let RegexMatchable::Anchor(pos) = atom {
+                    if let Anchor::End = pos {
+                        next.as_ref()
+                            .unwrap()
+                            .borrow()
+                            .kind
+                            .check_is_match_after_reaching_end_of_input()
+                    } else {
+                        false
+                    }
+                } else {
+                    false
+                }
+            }
+            _ => false,
+        }
+    }
+
+    pub fn matches(&self, c: char, index: usize) -> Option<Vec<Rc<State>>> {
+        match self {
+            Self::Simple(ref atom, ref next) => {
+                if atom.matches(c, index) {
+                    if let RegexMatchable::Anchor(_) = atom {
+                        return next.as_ref().unwrap().borrow().kind.matches(c, index);
+                    }
+
+                    if let Self::Split(ref next1, ref next2) = next.as_ref().unwrap().borrow().kind
+                    {
+                        return Some(vec![
+                            Rc::new(next1.as_ref().unwrap().borrow().clone()),
+                            Rc::new(next2.as_ref().unwrap().borrow().clone()),
+                        ]);
+                    }
+                    Some(vec![Rc::new(next.as_ref().unwrap().borrow().clone())])
+                } else {
+                    None
+                }
+            }
+            Self::Split(ref next1, ref next2) => {
+                return Some(vec![
+                    Rc::new(next1.as_ref().unwrap().borrow().clone()),
+                    Rc::new(next2.as_ref().unwrap().borrow().clone()),
+                ])
+            }
+            Self::Match => return None,
+            Self::Start(_) => {
+                panic!("Start should be never reached during matching")
+            }
+        }
+    }
+}
+
+impl State {
+    pub fn matches(&self, c: char, index: usize) -> Option<Vec<Rc<Self>>> {
+        self.kind.matches(c, index)
     }
 }
 
@@ -381,38 +399,50 @@ impl PartialEq for State {
 
 impl Eq for State {}
 
-type FragmentState = Option<Rc<StateKindMut>>;
+type FragmentState = Option<Rc<StateKind>>;
 
 #[derive(Clone)]
 struct Fragment {
-    state: Rc<RefCell<StateKindMut>>,
-    out: Vec<Rc<RefCell<StateKindMut>>>,
+    state: Rc<RefCell<State>>,
+    out: Vec<Rc<RefCell<State>>>,
 }
 
 impl Fragment {
-    pub fn new(state: Rc<RefCell<StateKindMut>>, out: Vec<Rc<RefCell<StateKindMut>>>) -> Self {
+    pub fn new(state: Rc<RefCell<State>>, out: Vec<Rc<RefCell<State>>>) -> Self {
         return Fragment {
             state: state.clone(),
             out,
         };
     }
 
-    pub fn patch(&mut self, next_fragment: Self) {
+    pub fn patch(&mut self, next_fragment: Self) -> Result<()> {
         for state in self.out.iter() {
-            if let StateKindMut::Simple(_, ref mut next_opt) = *state.borrow_mut() {
-                *next_opt = Some(next_fragment.state.clone());
-            }
+            state.borrow_mut().patch(next_fragment.state.clone())?;
         }
 
         self.out = next_fragment.out;
+
+        Ok(())
     }
 
-    pub fn patch_match(&mut self) {
+    pub fn patch_by(&mut self, patch: Rc<RefCell<State>>) -> Result<()> {
         for state in self.out.iter() {
-            if let StateKindMut::Simple(_, ref mut next_opt) = *state.borrow_mut() {
-                *next_opt = Some(Rc::new(RefCell::new(StateKindMut::Match)));
-            }
+            state.borrow_mut().patch(patch.clone())?;
         }
+
+        self.out = vec![patch];
+
+        Ok(())
+    }
+
+    pub fn patch_match(&mut self) -> Result<()> {
+        for state in self.out.iter() {
+            state
+                .borrow_mut()
+                .patch(Rc::new(RefCell::new(State::new(StateKind::Match))))?;
+        }
+
+        Ok(())
     }
 }
 
@@ -443,18 +473,19 @@ impl<'a> Parser<'a> {
         // and self.state returns state so we have at least one
         let mut current = fragments.pop().unwrap();
         // println!("FinalState before match -> {:?}", current.state);
-        current.patch_match();
+        current.patch_match()?;
         // println!("FinalState after  match -> {:?}", current.state);
 
         while let Some(mut prev) = fragments.pop() {
-            prev.patch(current);
+            prev.patch(current)?;
             current = prev;
         }
 
-        let start =
-            StateKindMut::Start(Some(Rc::new(RefCell::new(current.state.borrow().clone()))));
+        let start = State::new(StateKind::Start(Some(Rc::new(RefCell::new(
+            current.state.borrow().clone(),
+        )))));
 
-        return start._into_state();
+        return Ok(start);
     }
 
     fn consume(&mut self, expected_token: Token) -> Result<()> {
@@ -524,22 +555,15 @@ impl<'a> Parser<'a> {
 
     fn positive_char_group(&mut self) -> Result<Fragment> {
         self.consume(Token::LeftSquareBracket)?;
-        let state = match self.peek()? {
+        let state_kind = match self.peek()? {
             Token::Caret => {
                 self.consume(Token::Caret)?;
-
-                Rc::new(RefCell::new(StateKindMut::Simple(
-                    RegexMatchable::NegativeCharGroup(self.char_group()?),
-                    None,
-                )))
+                StateKind::Simple(RegexMatchable::NegativeCharGroup(self.char_group()?), None)
             }
-            _ => Rc::new(RefCell::new(StateKindMut::Simple(
-                RegexMatchable::PositiveCharGroup(self.char_group()?),
-                None,
-            ))),
+            _ => StateKind::Simple(RegexMatchable::PositiveCharGroup(self.char_group()?), None),
         };
         self.consume(Token::RightSquareBracket)?;
-
+        let state = Rc::new(RefCell::new(State::new(state_kind)));
         return Ok(Fragment::new(state.clone(), vec![state.clone()]));
     }
 
@@ -570,47 +594,65 @@ impl<'a> Parser<'a> {
         }
     }
 
-    fn pipe(&mut self, prev_state: &mut Fragment) -> Result<Fragment> {
-        Err(anyhow!("ahoj"))
+    fn pipe(&mut self, fragment: Fragment) -> Result<Fragment> {
+        // self.consume(Token::Pipe)?;
+        // Err(anyhow!("ahoj"))
+        !unimplemented!()
     }
 
-    fn wildcard(&mut self, prev_state: &mut Fragment) -> Result<Fragment> {
-        Err(anyhow!("ahoj"))
+    fn wildcard(&mut self, fragment: Fragment) -> Result<Fragment> {
+        // self.consume(Token::Wildcard)?;
+        !unimplemented!()
     }
 
-    fn question_mark(&mut self, prev_state: &mut Fragment) -> Result<Fragment> {
-        Err(anyhow!("ahoj"))
+    fn question_mark(&mut self, fragment: Fragment) -> Result<Fragment> {
+        // self.consume(Token::QuestionMark)?;
+        !unimplemented!()
     }
 
-    fn plus(&mut self, prev_fragment: &mut Fragment) -> Result<Fragment> {
-        Err(anyhow!("ahoj"))
+    fn plus(&mut self, mut fragment: Fragment) -> Result<Fragment> {
+        self.consume(Token::Plus)?;
+
+        let split = State::new(StateKind::Split(None, None));
+        let split_rc = Rc::new(RefCell::new(split));
+
+        if let State {
+            kind: StateKind::Split(ref mut s1, _),
+            id: _,
+        } = *split_rc.borrow_mut()
+        {
+            *s1 = Some(fragment.out[0].clone());
+        }
+
+        fragment.patch_by(split_rc)?;
+
+        // connect to next fragment if any
+        if !self.is_at_end() {
+            let next_fragment = self.bracket_fragment()?;
+            fragment.patch(next_fragment)?;
+        }
+
+        return Ok(fragment);
     }
 
-    fn state_simple(&mut self) -> Result<Rc<RefCell<StateKindMut>>> {
-        match self.peek()? {
+    fn state_simple(&mut self) -> Result<Rc<RefCell<State>>> {
+        let state_kind = match self.peek()? {
             Token::Caret => {
                 self.advance();
-                Ok(Rc::new(RefCell::new(StateKindMut::Simple(
-                    RegexMatchable::Anchor(Anchor::Start),
-                    None,
-                ))))
+                StateKind::Simple(RegexMatchable::Anchor(Anchor::Start), None)
             }
             Token::Dollar => {
                 self.advance();
-                Ok(Rc::new(RefCell::new(StateKindMut::Simple(
-                    RegexMatchable::Anchor(Anchor::End),
-                    None,
-                ))))
+                StateKind::Simple(RegexMatchable::Anchor(Anchor::End), None)
             }
-            _ => Ok(Rc::new(RefCell::new(StateKindMut::Simple(
-                RegexMatchable::Atom(self.atom()?),
-                None,
-            )))),
-        }
+            _ => StateKind::Simple(RegexMatchable::Atom(self.atom()?), None),
+        };
+
+        Ok(Rc::new(RefCell::new(State::new(state_kind))))
     }
 
     fn fragment_simple(&mut self) -> Result<Fragment> {
-        let mut states: Vec<Rc<RefCell<StateKindMut>>> = vec![];
+        let mut states: Vec<Rc<RefCell<State>>> = vec![];
 
         while !self.is_at_end() {
             match self.peek()? {
@@ -625,7 +667,7 @@ impl<'a> Parser<'a> {
         let out = current.clone();
 
         while let Some(prev) = states.pop() {
-            if let StateKindMut::Simple(_, ref mut next_opt) = *prev.borrow_mut() {
+            if let StateKind::Simple(_, ref mut next_opt) = prev.borrow_mut().kind {
                 *next_opt = Some(current.clone());
             }
             current = prev;
@@ -655,19 +697,21 @@ impl<'a> Parser<'a> {
     }
 
     fn fragment(&mut self) -> Result<Fragment> {
-        let mut state1 = self.bracket_fragment()?;
+        let mut fragment = self.bracket_fragment()?;
 
-        if self.is_at_end() {
-            return Ok(state1);
+        while !self.is_at_end() {
+            fragment = {
+                match self.peek()? {
+                    Token::Pipe => self.pipe(fragment)?,
+                    Token::WildCard => self.wildcard(fragment)?,
+                    Token::QuestionMark => self.question_mark(fragment)?,
+                    Token::Plus => self.plus(fragment)?,
+                    token => return Err(anyhow!("Expected '+/*-' got {:?}", token)),
+                }
+            }
         }
 
-        match self.peek()? {
-            Token::Pipe => return self.pipe(&mut state1),
-            Token::WildCard => return self.wildcard(&mut state1),
-            Token::QuestionMark => return self.question_mark(&mut state1),
-            Token::Plus => return self.plus(&mut state1),
-            _ => Ok(state1),
-        }
+        Ok(fragment)
     }
 }
 
@@ -723,7 +767,17 @@ impl<'a> RegexPattern<'a> {
         if let StateKind::Start(ref s) = self.start_state.kind {
             match s {
                 Some(s) => {
-                    current_states.insert(s.clone());
+                    if let State {
+                        kind: StateKind::Simple(RegexMatchable::Anchor(Anchor::Start), _),
+                        id: _,
+                    } = *s.borrow()
+                    {
+                        if starting_from != 0 {
+                            return Ok(false);
+                        }
+                    }
+
+                    current_states.insert(Rc::new(s.borrow().clone()));
                 }
                 None => return Ok(false),
             }
@@ -731,6 +785,10 @@ impl<'a> RegexPattern<'a> {
 
         for c in chars.iter() {
             next_states.clear();
+
+            if current_states.len() == 0 {
+                return Ok(false);
+            }
 
             for state in current_states.iter() {
                 if let StateKind::Match = state.kind {
@@ -1002,5 +1060,85 @@ mod tests {
         assert!(regex.matches("ahoj125").unwrap());
         assert!(regex.matches("125").unwrap());
         assert!(!regex.matches("125j").unwrap());
+    }
+
+    #[test]
+    fn test_regex_plus_sign() {
+        let regex = match RegexPattern::new("a+") {
+            Ok(regex) => regex,
+            Err(err) => {
+                println!("{}", err);
+                assert!(false);
+                return;
+            }
+        };
+        // print!("\n{:?}\n", regex.start_state);
+        // assert!(false);
+        assert!(regex.matches("apple").unwrap());
+        assert!(regex.matches("Saas").unwrap());
+        assert!(regex.matches("cats").unwrap());
+        assert!(regex.matches("caats").unwrap());
+
+        assert!(!regex.matches("dog").unwrap());
+        assert!(!regex.matches("cts").unwrap());
+
+        let regex = match RegexPattern::new("ca+ts") {
+            Ok(regex) => regex,
+            Err(err) => {
+                println!("{}", err);
+                assert!(false);
+                return;
+            }
+        };
+
+        assert!(regex.matches("caats").unwrap());
+        assert!(regex.matches("cats").unwrap());
+        assert!(regex.matches("caaatsx").unwrap());
+        assert!(regex.matches("caaaaaaaaaaaaatsx").unwrap());
+
+        assert!(!regex.matches("ctsx").unwrap());
+
+        let regex = match RegexPattern::new("ca+t") {
+            Ok(regex) => regex,
+            Err(err) => {
+                println!("{}", err);
+                assert!(false);
+                return;
+            }
+        };
+
+        assert!(regex.matches("cat").unwrap());
+        assert!(regex.matches("caaaaaaaaaaaaatsx").unwrap());
+
+        assert!(!regex.matches("ctsx").unwrap());
+    }
+
+    #[test]
+    fn test_regex_plus_sign_complex() {
+        let regex = match RegexPattern::new("^abc_\\d+_xyz$") {
+            Ok(regex) => regex,
+            Err(err) => {
+                println!("{}", err);
+                assert!(false);
+                return;
+            }
+        };
+        println!("\n{:?}\n", regex.start_state);
+        // assert!(false);
+        assert!(regex.matches("abc_123_xyz").unwrap());
+    }
+
+    #[test]
+    fn test_regex_pattern_tokenize_complex() {
+        let mut scanner = Scanner::new("^abc_\\d+_xyz$");
+        let tokens = scanner.tokenize();
+
+        assert!(tokens[0] == Token::Caret);
+        assert!(tokens[1] == Token::Character('a'));
+        assert!(tokens[2] == Token::Character('b'));
+        assert!(tokens[3] == Token::Character('c'));
+        assert!(tokens[4] == Token::Character('_'));
+        assert!(tokens[5] == Token::Escape);
+        assert!(tokens[6] == Token::Character('d'));
     }
 }
