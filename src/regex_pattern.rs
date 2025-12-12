@@ -315,7 +315,31 @@ impl Debug for State {
                 }
             }
             StateKind::Simple(matchable, state) => {
-                write!(f, "{:?}{:?}", matchable, state.as_ref().unwrap().borrow())
+                if let StateKind::Split(ref state1, ref state2) =
+                    state.as_ref().unwrap().borrow().kind
+                {
+                    if state1.clone().is_some_and(|s| s.borrow().id == self.id) {
+                        return write!(
+                            f,
+                            "{:?}+{:?}",
+                            matchable,
+                            state2.as_ref().unwrap().borrow()
+                        );
+                    }
+
+                    if state2.clone().is_some_and(|s| s.borrow().id == self.id) {
+                        return write!(
+                            f,
+                            "{:?}+{:?}",
+                            matchable,
+                            state1.as_ref().unwrap().borrow()
+                        );
+                    }
+
+                    Ok(())
+                } else {
+                    write!(f, "{:?}", state.as_ref().unwrap().borrow())
+                }
             }
             StateKind::Match => write!(f, " -> MATCH"),
         }
@@ -342,6 +366,18 @@ impl StateKind {
                 }
             }
             _ => false,
+        }
+    }
+
+    pub fn leads_directly_to_match(&self) -> bool {
+        match self {
+            Self::Match => true,
+            Self::Start(s_opt) => match s_opt {
+                Some(s) => s.borrow().kind.leads_directly_to_match(),
+                None => false,
+            },
+            Self::Simple(_, s) => s.as_ref().unwrap().borrow().kind.leads_directly_to_match(),
+            Self::Split(s1, s2) => false,
         }
     }
 
@@ -605,16 +641,28 @@ impl<'a> Parser<'a> {
         !unimplemented!()
     }
 
-    fn question_mark(&mut self, fragment: Fragment) -> Result<Fragment> {
-        // self.consume(Token::QuestionMark)?;
-        !unimplemented!()
+    fn question_mark(&mut self, mut fragment: Fragment) -> Result<Fragment> {
+        self.consume(Token::QuestionMark)?;
+
+        let last = fragment.out[0].clone();
+
+        let split = State::new(StateKind::Split(Some(last.clone()), None));
+
+        last.replace(split);
+
+        // connect to next fragment if any
+        if !self.is_at_end() {
+            let next_fragment = self.bracket_fragment()?;
+            fragment.patch(next_fragment)?;
+        }
+
+        Ok(fragment)
     }
 
     fn plus(&mut self, mut fragment: Fragment) -> Result<Fragment> {
         self.consume(Token::Plus)?;
 
-        let split = State::new(StateKind::Split(None, None));
-        let split_rc = Rc::new(RefCell::new(split));
+        let split_rc = Rc::new(RefCell::new(State::new(StateKind::Split(None, None))));
 
         if let State {
             kind: StateKind::Split(ref mut s1, _),
@@ -1140,5 +1188,50 @@ mod tests {
         assert!(tokens[4] == Token::Character('_'));
         assert!(tokens[5] == Token::Escape);
         assert!(tokens[6] == Token::Character('d'));
+    }
+
+    #[test]
+    fn test_regex_zero_or_one_times() {
+        let regex = match RegexPattern::new("dogs?") {
+            Ok(regex) => regex,
+            Err(err) => {
+                println!("{}", err);
+                assert!(false);
+                return;
+            }
+        };
+        println!("\n{:?}\n", regex.start_state);
+        // assert!(false);
+        assert!(regex.matches("dogs").unwrap());
+        assert!(regex.matches("dog").unwrap());
+        assert!(!regex.matches("cat").unwrap());
+
+        let regex = match RegexPattern::new("colou?r") {
+            Ok(regex) => regex,
+            Err(err) => {
+                println!("{}", err);
+                assert!(false);
+                return;
+            }
+        };
+        println!("\n{:?}\n", regex.start_state);
+
+        assert!(regex.matches("color").unwrap());
+        assert!(regex.matches("colour").unwrap());
+        assert!(!regex.matches("collor").unwrap());
+
+        let regex = match RegexPattern::new("\\d?") {
+            Ok(regex) => regex,
+            Err(err) => {
+                println!("{}", err);
+                assert!(false);
+                return;
+            }
+        };
+        println!("\n{:?}\n", regex.start_state);
+
+        assert!(regex.matches("1").unwrap());
+        assert!(regex.matches("").unwrap());
+        assert!(!regex.matches("c").unwrap());
     }
 }
