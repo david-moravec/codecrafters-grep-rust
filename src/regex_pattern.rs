@@ -188,13 +188,23 @@ impl Debug for RegexMatchable {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, PartialOrd, Ord, Eq)]
+#[derive(Clone, Copy, PartialEq, PartialOrd, Ord, Eq)]
 enum SplitType {
     Pipe,
-
     Plus,
     QuestionMark,
     Wildcard,
+}
+
+impl Debug for SplitType {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Pipe => write!(f, "|"),
+            Self::Plus => write!(f, "+"),
+            Self::QuestionMark => write!(f, "?"),
+            Self::Wildcard => write!(f, "*"),
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -279,7 +289,7 @@ impl State {
 impl Debug for State {
     fn fmt(&self, f: &mut Formatter<'_>) -> Result<(), std::fmt::Error> {
         match &self.kind {
-            StateKind::Split(s1, s2, split_t) => match split_t {
+            StateKind::Split(ref s1, ref s2, split_t) => match split_t {
                 SplitType::Pipe => {
                     write!(
                         f,
@@ -288,49 +298,28 @@ impl Debug for State {
                         s2.as_ref().unwrap().borrow()
                     )
                 }
-                SplitType::Plus => write!(f, "+"),
-                SplitType::Wildcard => write!(f, "*"),
-                SplitType::QuestionMark => write!(f, "?"),
+                _ => {
+                    // prevent cycles (s1 is always state that might refer to itself)
+                    if let State {
+                        kind: StateKind::Simple(ref matchable, _),
+                        id: _,
+                    } = *s1.as_ref().unwrap().borrow()
+                    {
+                        write!(f, "{:?}", matchable)?;
+                    } else {
+                        if s1.as_ref().unwrap().borrow().id != self.id {
+                            write!(f, "{:?}", s1.as_ref().unwrap().borrow())?;
+                        }
+                    }
+                    write!(f, "{:?}{:?}", split_t, s2.as_ref().unwrap().borrow())
+                }
             },
             StateKind::Start(state) => match state {
-                Some(ref s) => match s.borrow().kind {
-                    StateKind::Simple(_, _) => write!(f, "{:?}", s.borrow()),
-                    StateKind::Split(_, _, split_t) => match split_t {
-                        SplitType::Pipe => write!(f, "{:?}", s.borrow()),
-                        _ => write!(f, "regex cannot start with '+*?'"),
-                    },
-                    _ => write!(f, "invalid regex"),
-                },
+                Some(ref s) => write!(f, "{:?}", s.borrow()),
                 None => write!(f, "No regex\n"),
             },
             StateKind::Simple(matchable, state) => {
-                if let State {
-                    kind: StateKind::Split(ref s1, ref s2, split_t),
-                    id: _,
-                } = *state.as_ref().unwrap().borrow()
-                {
-                    match split_t {
-                        SplitType::Pipe => {
-                            write!(
-                                f,
-                                "{:?}|{:?}",
-                                s1.as_ref().unwrap().borrow(),
-                                s2.as_ref().unwrap().borrow()
-                            )
-                        }
-                        SplitType::Plus => {
-                            write!(f, "{:?}+{:?}", matchable, s2.as_ref().unwrap().borrow())
-                        }
-                        SplitType::Wildcard => {
-                            write!(f, "{:?}*{:?}", matchable, s2.as_ref().unwrap().borrow())
-                        }
-                        SplitType::QuestionMark => {
-                            write!(f, "{:?}?{:?}", matchable, s2.as_ref().unwrap().borrow())
-                        }
-                    }
-                } else {
-                    write!(f, "{:?}", state.as_ref().unwrap().borrow())
-                }
+                write!(f, "{:?}{:?}", matchable, state.as_ref().unwrap().borrow())
             }
             StateKind::Match => write!(f, " -> MATCH"),
         }
@@ -741,9 +730,6 @@ impl<'a> RegexPattern<'a> {
     }
 
     fn match_starting_from(&self, to_match: &str, starting_from: usize) -> Result<bool> {
-        // println!("Matching: {}", to_match);
-        // println!("Pattern : {:?}", self.start_state);
-
         let chars: Vec<char> = to_match.chars().collect();
         let mut next_states: HashSet<Rc<State>> = HashSet::new();
         let mut current_states: HashSet<Rc<State>> = HashSet::new();
