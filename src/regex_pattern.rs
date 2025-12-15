@@ -90,10 +90,6 @@ impl<'a> Scanner<'a> {
         return tokens;
     }
 
-    fn previous(&self) -> char {
-        return self.chars[self.current - 1];
-    }
-
     fn advance(&mut self) -> Option<char> {
         if self.current == self.chars.len() {
             return None;
@@ -101,10 +97,6 @@ impl<'a> Scanner<'a> {
         self.current += 1;
 
         return Some(self.chars[self.current - 1]);
-    }
-
-    fn peek(&self) -> Option<char> {
-        return self.chars.get(self.current + 1).map(|x| *x);
     }
 }
 
@@ -199,6 +191,7 @@ impl Debug for RegexMatchable {
 #[derive(Clone, Copy, Debug, PartialEq, PartialOrd, Ord, Eq)]
 enum SplitType {
     Pipe,
+
     Plus,
     QuestionMark,
     Wildcard,
@@ -214,30 +207,6 @@ enum StateKind {
     ),
     Match,
     Start(Option<Rc<RefCell<State>>>),
-}
-
-impl StateKind {
-    pub fn out(&self) -> Vec<Option<Rc<RefCell<State>>>> {
-        match self.clone() {
-            next => match next {
-                StateKind::Simple(_, ref_state) => vec![ref_state],
-                StateKind::Split(ref1, ref2, _) => vec![ref1, ref2],
-                StateKind::Match => vec![],
-                StateKind::Start(state) => vec![state],
-            },
-        }
-    }
-}
-
-impl Debug for StateKind {
-    fn fmt(&self, f: &mut Formatter<'_>) -> Result<(), std::fmt::Error> {
-        match self {
-            StateKind::Match => write!(f, " -> MATCH"),
-            StateKind::Start(next) => write!(f, "{:?}", next),
-            StateKind::Simple(atom, next) => write!(f, "{:?}{:?}", atom, next),
-            StateKind::Split(n1, n2, _) => write!(f, "{:?}|{:?}", n1, n2),
-        }
-    }
 }
 
 static mut STATE_ID: usize = 0;
@@ -565,38 +534,6 @@ impl<'a> Parser<'a> {
         return self.tokens[self.current - 1];
     }
 
-    fn try_advance(&mut self) -> Result<Token> {
-        match self.tokens.get(self.current + 1).map(|x| *x) {
-            Some(t) => {
-                self.current += 1;
-                Ok(t)
-            }
-            None => Err(anyhow!("End of file reached")),
-        }
-    }
-
-    fn advance_if_matches(&mut self, token: Token) -> Option<Token> {
-        if self.is_at_end() {
-            return None;
-        } else if std::mem::discriminant(&token) == std::mem::discriminant(&self.peek().unwrap()) {
-            return Some(self.advance());
-        } else {
-            return None;
-        }
-    }
-
-    fn advance_if_matches_many(&mut self, tokens: &[Token]) -> Option<Token> {
-        for token in tokens {
-            let matches = self.advance_if_matches(*token);
-
-            if matches.is_some() {
-                return matches;
-            }
-        }
-
-        return None;
-    }
-
     fn is_at_end(&self) -> bool {
         return self.peek().is_err();
     }
@@ -606,10 +543,6 @@ impl<'a> Parser<'a> {
             Some(t) => Ok(t),
             None => Err(anyhow!("End of file reached")),
         }
-    }
-
-    fn peek_next(&self) -> Option<Token> {
-        return self.tokens.get(self.current + 1).map(|x| *x);
     }
 
     fn char_group(&mut self) -> Result<RegexMatchable> {
@@ -769,7 +702,6 @@ pub struct RegexPattern<'a> {
     tokens: Vec<Token>,
     pattern: &'a str,
     start_state: State,
-    list_id: usize,
 }
 
 impl<'a> RegexPattern<'a> {
@@ -782,7 +714,6 @@ impl<'a> RegexPattern<'a> {
             tokens,
             pattern,
             start_state,
-            list_id: 0,
         });
     }
 
