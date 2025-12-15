@@ -458,16 +458,16 @@ impl PartialEq for State {
 
 impl Eq for State {}
 
-type FragmentState = Option<Rc<StateKind>>;
+type StateMut = Rc<RefCell<State>>;
 
 #[derive(Clone)]
 struct Fragment {
-    state: Rc<RefCell<State>>,
-    out: Vec<Rc<RefCell<State>>>,
+    state: StateMut,
+    out: Vec<StateMut>,
 }
 
 impl Fragment {
-    pub fn new(state: Rc<RefCell<State>>, out: Vec<Rc<RefCell<State>>>) -> Self {
+    pub fn new(state: StateMut, out: Vec<StateMut>) -> Self {
         return Fragment {
             state: state.clone(),
             out,
@@ -484,7 +484,7 @@ impl Fragment {
         Ok(())
     }
 
-    pub fn patch_by(&mut self, patch: Rc<RefCell<State>>) -> Result<()> {
+    pub fn patch_by(&mut self, patch: StateMut) -> Result<()> {
         for state in self.out.iter() {
             state.borrow_mut().patch(patch.clone())?;
         }
@@ -612,21 +612,22 @@ impl<'a> Parser<'a> {
         return self.tokens.get(self.current + 1).map(|x| *x);
     }
 
-    fn positive_char_group(&mut self) -> Result<Fragment> {
+    fn char_group(&mut self) -> Result<RegexMatchable> {
         self.consume(Token::LeftSquareBracket)?;
-        let state_kind = match self.peek()? {
+
+        let result = match self.peek()? {
             Token::Caret => {
                 self.consume(Token::Caret)?;
-                StateKind::Simple(RegexMatchable::NegativeCharGroup(self.char_group()?), None)
+                Ok(RegexMatchable::NegativeCharGroup(self.regex_atom_set()?))
             }
-            _ => StateKind::Simple(RegexMatchable::PositiveCharGroup(self.char_group()?), None),
+            _ => Ok(RegexMatchable::PositiveCharGroup(self.regex_atom_set()?)),
         };
+
         self.consume(Token::RightSquareBracket)?;
-        let state = Rc::new(RefCell::new(State::new(state_kind)));
-        return Ok(Fragment::new(state.clone(), vec![state.clone()]));
+        result
     }
 
-    fn char_group(&mut self) -> Result<HashSet<RegexAtom>> {
+    fn regex_atom_set(&mut self) -> Result<HashSet<RegexAtom>> {
         let mut atoms: HashSet<RegexAtom> = HashSet::new();
 
         while !self.is_at_end() {
@@ -653,144 +654,114 @@ impl<'a> Parser<'a> {
         }
     }
 
-    fn pipe(&mut self, fragment: Fragment) -> Result<Fragment> {
+    fn regex_matchable(&mut self) -> Result<RegexMatchable> {
+        match self.peek()? {
+            Token::LeftSquareBracket => self.char_group(),
+            Token::Escape | Token::Character(_) => Ok(RegexMatchable::Atom(self.atom()?)),
+            token => Err(anyhow!("Expected bracket/escape/character got {:?}", token)),
+        }
+    }
+
+    fn pipe(&mut self, fragment: &mut Fragment) -> Result<()> {
         // self.consume(Token::Pipe)?;
         // Err(anyhow!("ahoj"))
         !unimplemented!()
     }
 
-    fn wildcard(&mut self, fragment: Fragment) -> Result<Fragment> {
+    fn wildcard(&mut self, fragment: &mut Fragment) -> Result<()> {
         // self.consume(Token::Wildcard)?;
         !unimplemented!()
     }
 
-    fn question_mark(&mut self, mut fragment: Fragment) -> Result<Fragment> {
+    fn question_mark(&mut self, fragment: &mut Fragment) -> Result<()> {
         self.consume(Token::QuestionMark)?;
 
-        let last = fragment.out[0].clone();
-
-        let split = State::new(StateKind::Split(
-            Some(last.clone()),
+        let state = State::new(StateKind::Split(
+            Some(fragment.state.clone()),
             None,
             SplitType::QuestionMark,
         ));
 
-        last.replace(split);
+        fragment.state.replace(state);
 
-        // connect to next fragment if any
-        if !self.is_at_end() {
-            let next_fragment = self.bracket_fragment()?;
-            fragment.patch(next_fragment)?;
-        }
-
-        Ok(fragment)
+        Ok(())
     }
 
-    fn plus(&mut self, mut fragment: Fragment) -> Result<Fragment> {
+    fn plus(&mut self, fragment: &mut Fragment) -> Result<()> {
         self.consume(Token::Plus)?;
 
         let split_rc = Rc::new(RefCell::new(State::new(StateKind::Split(
-            None,
+            Some(fragment.state.clone()),
             None,
             SplitType::Plus,
         ))));
 
-        if let State {
-            kind: StateKind::Split(ref mut s1, _, SplitType::Plus),
-            id: _,
-        } = *split_rc.borrow_mut()
-        {
-            *s1 = Some(fragment.out[0].clone());
-        }
-
-        fragment.patch_by(split_rc)?;
-
-        // connect to next fragment if any
-        if !self.is_at_end() {
-            let next_fragment = self.bracket_fragment()?;
-            fragment.patch(next_fragment)?;
-        }
-
-        return Ok(fragment);
+        fragment.patch_by(split_rc)
     }
 
-    fn state_simple(&mut self) -> Result<Rc<RefCell<State>>> {
-        let state_kind = match self.peek()? {
+    fn state(&mut self) -> Result<Fragment> {
+        match self.peek()? {
             Token::Caret => {
                 self.advance();
-                StateKind::Simple(RegexMatchable::Anchor(Anchor::Start), None)
+                let anchor = Rc::new(RefCell::new(State::new(StateKind::Simple(
+                    RegexMatchable::Anchor(Anchor::Start),
+                    None,
+                ))));
+                Ok(Fragment::new(anchor.clone(), vec![anchor]))
             }
             Token::Dollar => {
                 self.advance();
-                StateKind::Simple(RegexMatchable::Anchor(Anchor::End), None)
+                let anchor = Rc::new(RefCell::new(State::new(StateKind::Simple(
+                    RegexMatchable::Anchor(Anchor::End),
+                    None,
+                ))));
+                Ok(Fragment::new(anchor.clone(), vec![anchor]))
             }
-            _ => StateKind::Simple(RegexMatchable::Atom(self.atom()?), None),
-        };
+            _ => {
+                let state = Rc::new(RefCell::new(State::new(StateKind::Simple(
+                    self.regex_matchable()?,
+                    None,
+                ))));
+                let mut fragment = Fragment::new(state.clone(), vec![state.clone()]);
 
-        Ok(Rc::new(RefCell::new(State::new(state_kind))))
-    }
+                if let Ok(current) = self.peek() {
+                    match current {
+                        Token::QuestionMark => self.question_mark(&mut fragment)?,
+                        Token::WildCard => self.wildcard(&mut fragment)?,
+                        Token::Plus => self.plus(&mut fragment)?,
+                        Token::Pipe => self.pipe(&mut fragment)?,
+                        _ => {}
+                    };
+                };
 
-    fn fragment_simple(&mut self) -> Result<Fragment> {
-        let mut states: Vec<Rc<RefCell<State>>> = vec![];
-
-        while !self.is_at_end() {
-            match self.peek()? {
-                Token::Character(_) | Token::Escape | Token::Dollar | Token::Caret => {
-                    states.push(self.state_simple()?);
-                }
-                _ => break,
+                Ok(fragment)
             }
-        }
-
-        let mut current = states.pop().unwrap();
-        let out = current.clone();
-
-        while let Some(prev) = states.pop() {
-            if let StateKind::Simple(_, ref mut next_opt) = prev.borrow_mut().kind {
-                *next_opt = Some(current.clone());
-            }
-            current = prev;
-        }
-        let fragment = Fragment::new(current, vec![out]);
-
-        return Ok(fragment);
-    }
-
-    fn sub_fragment(&mut self) -> Result<Fragment> {
-        self.consume(Token::LeftBracket)?;
-        let result = self.fragment_simple();
-        self.consume(Token::RightBracket)?;
-
-        return result;
-    }
-
-    fn bracket_fragment(&mut self) -> Result<Fragment> {
-        match self.peek()? {
-            Token::LeftBracket => return self.sub_fragment(),
-            Token::LeftSquareBracket => return self.positive_char_group(),
-            Token::Escape | Token::Character(_) | Token::Caret | Token::Dollar => {
-                return self.fragment_simple()
-            }
-            token => Err(anyhow!("Expected bracket/escape/character got {:?}", token)),
         }
     }
 
     fn fragment(&mut self) -> Result<Fragment> {
-        let mut fragment = self.bracket_fragment()?;
+        let mut fragments: Vec<Fragment> = vec![];
 
         while !self.is_at_end() {
-            fragment = {
-                match self.peek()? {
-                    Token::Pipe => self.pipe(fragment)?,
-                    Token::WildCard => self.wildcard(fragment)?,
-                    Token::QuestionMark => self.question_mark(fragment)?,
-                    Token::Plus => self.plus(fragment)?,
-                    token => return Err(anyhow!("Expected '+/*-' got {:?}", token)),
-                }
-            }
+            fragments.push(self.state()?);
         }
 
-        Ok(fragment)
+        let mut current = fragments.pop().unwrap();
+
+        while let Some(mut prev) = fragments.pop() {
+            prev.patch(current)?;
+            current = prev;
+        }
+
+        return Ok(current);
+    }
+
+    fn sub_fragment(&mut self) -> Result<Fragment> {
+        self.consume(Token::LeftBracket)?;
+        let result = self.fragment();
+        self.consume(Token::RightBracket)?;
+
+        return result;
     }
 }
 
