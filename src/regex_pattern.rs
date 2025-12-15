@@ -340,23 +340,18 @@ impl Debug for State {
 impl StateKind {
     pub fn check_is_match_after_reaching_end_of_input(&self) -> bool {
         match self {
-            Self::Match => true,
-            Self::Simple(atom, next) => {
+            Self::Simple(atom, _) => {
                 if let RegexMatchable::Anchor(pos) = atom {
                     if let Anchor::End = pos {
-                        next.as_ref()
-                            .unwrap()
-                            .borrow()
-                            .kind
-                            .check_is_match_after_reaching_end_of_input()
+                        true
                     } else {
-                        false
+                        self.leads_directly_to_match()
                     }
                 } else {
                     false
                 }
             }
-            _ => false,
+            _ => self.leads_directly_to_match(),
         }
     }
 
@@ -367,8 +362,16 @@ impl StateKind {
                 Some(s) => s.borrow().kind.leads_directly_to_match(),
                 None => false,
             },
-            Self::Simple(_, s) => s.as_ref().unwrap().borrow().kind.leads_directly_to_match(),
-            Self::Split(_, _, _) => false,
+            Self::Simple(_, _) => false,
+            Self::Split(s1, s2, split_t) => match split_t {
+                SplitType::Pipe => {
+                    s1.as_ref().unwrap().borrow().kind.leads_directly_to_match()
+                        || s2.as_ref().unwrap().borrow().kind.leads_directly_to_match()
+                }
+                SplitType::Plus | SplitType::QuestionMark | SplitType::Wildcard => {
+                    s2.as_ref().unwrap().borrow().kind.leads_directly_to_match()
+                }
+            },
         }
     }
 
@@ -734,7 +737,7 @@ impl<'a> RegexPattern<'a> {
             }
         }
 
-        return Ok(false);
+        return Ok(self.start_state.kind.leads_directly_to_match());
     }
 
     fn match_starting_from(&self, to_match: &str, starting_from: usize) -> Result<bool> {
