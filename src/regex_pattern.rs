@@ -14,7 +14,7 @@ enum Token {
     LeftSquareBracket,
     RightSquareBracket,
     Pipe,
-    WildCard,
+    Asterisk,
     QuestionMark,
     Plus,
     Caret,
@@ -31,7 +31,7 @@ impl Token {
             Self::LeftSquareBracket => '[',
             Self::RightSquareBracket => ']',
             Self::Pipe => '|',
-            Self::WildCard => '*',
+            Self::Asterisk => '*',
             Self::QuestionMark => '?',
             Self::Plus => '+',
             Self::Caret => '^',
@@ -63,7 +63,7 @@ impl<'a> Scanner<'a> {
         while let Some(c) = self.advance() {
             if c == '\\' {
                 tokens.push(Token::Escape)
-            } else if c.is_alphabetic() || c == '_' || c == ' ' || c == '@' {
+            } else if c.is_alphabetic() || c == '.' || c == '_' || c == ' ' || c == '@' {
                 tokens.push(Token::Character(c))
             } else if c == '|' {
                 tokens.push(Token::Pipe);
@@ -80,7 +80,7 @@ impl<'a> Scanner<'a> {
             } else if c == '+' {
                 tokens.push(Token::Plus)
             } else if c == '*' {
-                tokens.push(Token::WildCard)
+                tokens.push(Token::Asterisk)
             } else if c == '^' {
                 tokens.push(Token::Caret)
             } else if c == '$' {
@@ -109,7 +109,13 @@ enum RegexAtom {
 impl RegexAtom {
     pub fn matches(&self, c: char) -> bool {
         match self {
-            &Self::Char(ch) => c == ch,
+            &Self::Char(ch) => {
+                if ch == '.' {
+                    c != '\n'
+                } else {
+                    c == ch
+                }
+            }
             &Self::Escaped(ch) => match ch {
                 'd' => c >= '0' && c <= '9',
                 'w' => c.is_alphanumeric() || c == '_',
@@ -654,7 +660,7 @@ impl<'a> Parser<'a> {
                 if let Ok(current) = self.peek() {
                     match current {
                         Token::QuestionMark => self.question_mark(&mut fragment)?,
-                        Token::WildCard => self.wildcard(&mut fragment)?,
+                        Token::Asterisk => self.wildcard(&mut fragment)?,
                         Token::Plus => self.plus(&mut fragment)?,
                         Token::Pipe => self.pipe(&mut fragment)?,
                         _ => {}
@@ -839,9 +845,9 @@ mod tests {
         assert!(tokens[12] == Token::Character('a'));
         assert!(tokens[13] == Token::Plus);
         assert!(tokens[14] == Token::Character('c'));
-        assert!(tokens[15] == Token::WildCard);
+        assert!(tokens[15] == Token::Asterisk);
         assert!(tokens[16] == Token::RightBracket);
-        assert!(tokens[17] == Token::WildCard);
+        assert!(tokens[17] == Token::Asterisk);
     }
 
     #[test]
@@ -1157,5 +1163,45 @@ mod tests {
         assert!(regex.matches("1").unwrap());
         assert!(regex.matches("").unwrap());
         assert!(!regex.matches("c").unwrap());
+    }
+
+    #[test]
+    fn test_wildcard() {
+        let regex = match RegexPattern::new("d.g") {
+            Ok(regex) => regex,
+            Err(err) => {
+                println!("{}", err);
+                assert!(false);
+                return;
+            }
+        };
+        println!("\n{:?}\n", regex.start_state);
+        assert!(regex.matches("dog").unwrap());
+        assert!(regex.matches("dag").unwrap());
+        assert!(regex.matches("d9g").unwrap());
+        assert!(!regex.matches("cog").unwrap());
+        assert!(!regex.matches("dg").unwrap());
+
+        let regex = match RegexPattern::new("...") {
+            Ok(regex) => regex,
+            Err(err) => {
+                println!("{}", err);
+                assert!(false);
+                return;
+            }
+        };
+        println!("\n{:?}\n", regex.start_state);
+        assert!(regex.matches("cat").unwrap());
+
+        let regex = match RegexPattern::new(".\\d.") {
+            Ok(regex) => regex,
+            Err(err) => {
+                println!("{}", err);
+                assert!(false);
+                return;
+            }
+        };
+        println!("\n{:?}\n", regex.start_state);
+        assert!(regex.matches("a1b").unwrap());
     }
 }
