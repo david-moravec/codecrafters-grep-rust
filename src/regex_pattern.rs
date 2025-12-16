@@ -601,13 +601,15 @@ impl<'a> Parser<'a> {
     fn question_mark(&mut self, fragment: &mut Fragment) -> Result<()> {
         self.consume(Token::QuestionMark)?;
 
-        let state = State::new(StateKind::Split(
-            Some(fragment.state.clone()),
+        let state = Rc::new(RefCell::new(fragment.state.borrow().clone()));
+
+        let zero_or_one = Rc::new(RefCell::new(State::new(StateKind::Split(
+            Some(state.clone()),
             None,
             SplitType::QuestionMark,
-        ));
+        ))));
 
-        fragment.state.replace(state);
+        *fragment = Fragment::new(zero_or_one.clone(), vec![zero_or_one, state]);
 
         Ok(())
     }
