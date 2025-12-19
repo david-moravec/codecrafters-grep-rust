@@ -287,6 +287,23 @@ impl State {
             None
         }
     }
+
+    pub fn matches(&self, c: char) -> bool {
+        self.kind.matches(c)
+    }
+}
+
+impl From<RegexMatchable> for State {
+    fn from(value: RegexMatchable) -> Self {
+        unsafe {
+            STATE_ID += 1;
+            Self {
+                kind: StateKind::Simple(value, OnceCell::new()),
+                id: STATE_ID,
+                list_id: Cell::new(-1),
+            }
+        }
+    }
 }
 
 impl Debug for State {
@@ -375,12 +392,6 @@ impl StateKind {
             Self::Match => true,
             _ => false,
         }
-    }
-}
-
-impl State {
-    pub fn matches(&self, c: char) -> bool {
-        self.kind.matches(c)
     }
 }
 
@@ -599,25 +610,16 @@ impl<'a> Parser<'a> {
         match self.peek()? {
             Token::Caret => {
                 self.advance();
-                let anchor = Rc::new(State::new(StateKind::Simple(
-                    RegexMatchable::Anchor(Anchor::Start),
-                    OnceCell::new(),
-                )));
+                let anchor = Rc::new(State::from(RegexMatchable::Anchor(Anchor::Start)));
                 Ok(Fragment::new(anchor.clone(), vec![anchor]))
             }
             Token::Dollar => {
                 self.advance();
-                let anchor = Rc::new(State::new(StateKind::Simple(
-                    RegexMatchable::Anchor(Anchor::End),
-                    OnceCell::new(),
-                )));
+                let anchor = Rc::new(State::from(RegexMatchable::Anchor(Anchor::End)));
                 Ok(Fragment::new(anchor.clone(), vec![anchor]))
             }
             _ => {
-                let state = Rc::new(State::new(StateKind::Simple(
-                    self.regex_matchable()?,
-                    OnceCell::new(),
-                )));
+                let state = Rc::new(State::from(self.regex_matchable()?));
                 let mut fragment = Fragment::new(state.clone(), vec![state.clone()]);
 
                 if let Ok(current) = self.peek() {
