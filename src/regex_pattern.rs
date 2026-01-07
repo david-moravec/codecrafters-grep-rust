@@ -640,16 +640,7 @@ impl<'a> Parser<'a> {
         let mut fragments: Vec<Fragment> = vec![];
 
         while !self.is_at_end() {
-            if self.peek()? == Token::Pipe {
-                break;
-            }
-
-            let state = match self.peek()? {
-                Token::LeftBracket => self.bracketed_fragment()?,
-                _ => self.pipe()?,
-            };
-
-            fragments.push(state);
+            fragments.push(self.pipe()?);
         }
 
         let mut current = fragments.pop().unwrap();
@@ -667,7 +658,8 @@ impl<'a> Parser<'a> {
 
         while !self.is_at_end() {
             match self.peek()? {
-                Token::Pipe | Token::RightBracket | Token::LeftBracket => break,
+                Token::Pipe | Token::RightBracket => break,
+                Token::LeftBracket => fragments.push(self.bracketed_fragment()?),
                 _ => fragments.push(self.state()?),
             }
         }
@@ -686,34 +678,29 @@ impl<'a> Parser<'a> {
         let mut fragment = self.state_fragment()?;
         let mut fragment2: Fragment;
 
-        if self.is_at_end() {
-            return Ok(fragment);
-        }
-
         while !self.is_at_end() {
-            match self.peek()? {
-                Token::RightBracket | Token::LeftBracket => break,
-                _ => {
-                    self.consume(Token::Pipe)?;
-                    fragment2 = self.state_fragment()?;
-                    let pipe = Rc::new(State::new(StateKind::Split(
-                        OnceCell::from(fragment.state),
-                        OnceCell::from(fragment2.state),
-                        SplitType::Pipe,
-                    )));
-
-                    fragment = Fragment::new(
-                        pipe,
-                        Vec::from_iter(
-                            fragment
-                                .out
-                                .iter()
-                                .cloned()
-                                .chain(fragment2.out.iter().cloned()),
-                        ),
-                    );
-                }
+            if self.peek().unwrap() != Token::Pipe {
+                return Ok(fragment);
             }
+
+            self.consume(Token::Pipe)?;
+            fragment2 = self.state_fragment()?;
+            let pipe = Rc::new(State::new(StateKind::Split(
+                OnceCell::from(fragment.state),
+                OnceCell::from(fragment2.state),
+                SplitType::Pipe,
+            )));
+
+            fragment = Fragment::new(
+                pipe,
+                Vec::from_iter(
+                    fragment
+                        .out
+                        .iter()
+                        .cloned()
+                        .chain(fragment2.out.iter().cloned()),
+                ),
+            );
         }
 
         return Ok(fragment);
