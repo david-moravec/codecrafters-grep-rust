@@ -321,7 +321,10 @@ impl Debug for State {
                         list_id: _,
                     } = **s1.get().unwrap()
                     {
-                        write!(f, "{:?}", matchable)?;
+                        match split_t {
+                            SplitType::QuestionMark => write!(f, "{:?}", matchable)?,
+                            _ => {}
+                        }
                     } else {
                         if s1.get().unwrap().id != self.id {
                             write!(f, "{:?}", s1.get().unwrap())?;
@@ -794,6 +797,7 @@ pub struct RegexPattern<'a> {
     pattern: &'a str,
     start_state: State,
     last_list_id: Cell<i64>,
+    to_match: Cell<Vec<char>>,
 }
 
 impl<'a> RegexPattern<'a> {
@@ -807,17 +811,19 @@ impl<'a> RegexPattern<'a> {
             pattern,
             start_state,
             last_list_id: Cell::new(0),
+            to_match: Cell::new(vec![]),
         });
     }
 
     pub fn matches(&self, to_match: &str) -> Result<bool> {
-        return self.try_match_starting_from_each_char(to_match);
+        // self.match_no_backtracking(to_match)
+        self.match_backtracking(to_match)
     }
 
-    fn try_match_starting_from_each_char(&self, to_match: &str) -> Result<bool> {
+    fn match_no_backtracking(&self, to_match: &str) -> Result<bool> {
         let chars: Vec<char> = to_match.chars().collect();
         for i in 0..chars.len() {
-            match self.match_starting_from(&chars[i..].iter().collect::<String>(), i) {
+            match self.thompson_algorithm(&chars[i..].iter().collect::<String>(), i == 0) {
                 Ok(matches) => {
                     if matches {
                         return Ok(true);
@@ -830,7 +836,7 @@ impl<'a> RegexPattern<'a> {
         return Ok(self.start_state.kind.leads_directly_to_match());
     }
 
-    fn step(
+    fn thompson_step(
         &self,
         c: char,
         // index: usize,
@@ -853,11 +859,7 @@ impl<'a> RegexPattern<'a> {
         }
     }
 
-    fn match_starting_from(&self, to_match: &str, starting_from: usize) -> Result<bool> {
-        let chars: Vec<char> = to_match.chars().collect();
-        let mut next_states: StateCollection = StateCollection::new(self.last_list_id.get());
-        let mut current_states: StateCollection = StateCollection::new(self.last_list_id.get());
-
+    fn init_state(&self, starts_from_beginning: bool) -> Option<Rc<State>> {
         if let State {
             kind: StateKind::Start(ref s),
             id: _,
@@ -872,17 +874,29 @@ impl<'a> RegexPattern<'a> {
                         list_id: _,
                     } = **s
                     {
-                        if starting_from == 0 {
-                            current_states.add_state(n1.get().unwrap().clone());
+                        if starts_from_beginning {
+                            return Some(n1.get().unwrap().clone());
                         } else {
-                            return Ok(false);
+                            return None;
                         }
                     } else {
-                        current_states.add_state(s.clone());
+                        return Some(s.clone());
                     }
                 }
-                None => return Ok(false),
+                None => return None,
             }
+        } else {
+            return None;
+        }
+    }
+
+    fn thompson_algorithm(&self, to_match: &str, starts_from_beginning: bool) -> Result<bool> {
+        let chars: Vec<char> = to_match.chars().collect();
+        let mut next_states: StateCollection = StateCollection::new(self.last_list_id.get());
+        let mut current_states: StateCollection = StateCollection::new(self.last_list_id.get());
+
+        if let Some(start) = self.init_state(starts_from_beginning) {
+            current_states.add_state(start);
         } else {
             return Ok(false);
         }
@@ -899,7 +913,7 @@ impl<'a> RegexPattern<'a> {
                 return Ok(true);
             }
 
-            self.step(*c, &current_states, &mut next_states);
+            self.thompson_step(*c, &current_states, &mut next_states);
 
             current_states.states = next_states.states.clone();
         }
@@ -907,6 +921,67 @@ impl<'a> RegexPattern<'a> {
         // For pattern to match it needs to reach match state or end of string state
         //  before exhausting input string
         Ok(current_states.check_match_after_reaching_end())
+    }
+
+    fn match_backtracking(&self, to_match: &str) -> Result<bool> {
+        let mut init_state: Rc<State>;
+
+        for (i, _) in to_match.chars().enumerate() {
+            if let Some(start) = self.init_state(i == 0) {
+                init_state = start;
+            } else {
+                return Ok(false);
+            }
+
+            self.to_match.set(
+                to_match.chars().collect::<Vec<char>>()[i..]
+                    .into_iter()
+                    .map(|c| *c)
+                    .collect(),
+            );
+
+            if self.backtracking(init_state, 0)? {
+                return Ok(true);
+            }
+        }
+
+        Ok(false)
+    }
+
+    fn backtracking(&self, state: Rc<State>, to_match_index: usize) -> Result<bool> {
+        if state.kind.leads_directly_to_match() {
+            return Ok(true);
+        }
+
+        match state.kind {
+            StateKind::Simple(ref matchable, ref next) => {
+                let to_match = self.to_match.take();
+
+                if to_match.len() <= to_match_index {
+                    self.to_match.set(to_match);
+
+                    return Ok(state.kind.check_is_match_after_reaching_end_of_input());
+                }
+
+                let current_char = to_match[to_match_index];
+
+                self.to_match.set(to_match);
+
+                if matchable.matches(current_char) {
+                    return self.backtracking(next.get().unwrap().clone(), to_match_index + 1);
+                } else {
+                    Ok(false)
+                }
+            }
+            StateKind::Split(ref next1, ref next2, _) => {
+                if self.backtracking(next1.get().unwrap().clone(), to_match_index)? {
+                    return Ok(true);
+                } else {
+                    return self.backtracking(next2.get().unwrap().clone(), to_match_index);
+                }
+            }
+            _ => panic!("Only statates with matchable can be matched"),
+        }
     }
 }
 
@@ -1312,6 +1387,17 @@ mod tests {
         };
         println!("\n{:?}\n", regex.start_state);
         assert!(regex.matches("a1b").unwrap());
+
+        let regex = match RegexPattern::new("g.+gol") {
+            Ok(regex) => regex,
+            Err(err) => {
+                println!("{}", err);
+                assert!(false);
+                return;
+            }
+        };
+        println!("\n{:?}\n", regex.start_state);
+        assert!(regex.matches("goøö0Ogol").unwrap());
     }
 
     #[test]
@@ -1355,5 +1441,16 @@ mod tests {
         assert!(regex.matches("blue").unwrap());
         assert!(regex.matches("green").unwrap());
         assert!(!regex.matches("rex").unwrap());
+
+        let regex = match RegexPattern::new("^I see \\d+ (cat|dog)s?$") {
+            Ok(regex) => regex,
+            Err(err) => {
+                println!("{}", err);
+                assert!(false);
+                return;
+            }
+        };
+        println!("\n{:?}\n", regex.start_state);
+        assert!(regex.matches("I see 1 cat").unwrap());
     }
 }
