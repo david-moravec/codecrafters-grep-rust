@@ -216,6 +216,9 @@ enum StateKind {
     Split(OnceCell<StateMut>, OnceCell<StateMut>, SplitType),
     Match,
     Start(OnceCell<StateMut>),
+    StartRecording(u8, OnceCell<StateMut>),
+    StopRecording(u8, OnceCell<StateMut>),
+    Replay(u8, OnceCell<StateMut>),
 }
 
 static mut STATE_ID: usize = 0;
@@ -241,7 +244,11 @@ impl State {
 
     pub fn patch(&self, next_state: StateMut) -> Result<()> {
         match self.kind {
-            StateKind::Simple(_, ref next) | StateKind::Start(ref next) => {
+            StateKind::Simple(_, ref next)
+            | StateKind::Start(ref next)
+            | StateKind::StartRecording(_, ref next)
+            | StateKind::Replay(_, ref next)
+            | StateKind::StopRecording(_, ref next) => {
                 if next.get().is_none() {
                     let _ = next.set(next_state);
                     // *next = Some(next_state);
@@ -340,6 +347,15 @@ impl Debug for State {
             StateKind::Simple(matchable, state) => {
                 write!(f, "{:?}{:?}", matchable, state.get().unwrap())
             }
+            StateKind::StartRecording(_, state) => {
+                write!(f, "({:?}", state.get().unwrap())
+            }
+            StateKind::StopRecording(_, state) => {
+                write!(f, "){:?}", state.get().unwrap())
+            }
+            StateKind::Replay(i, state) => {
+                write!(f, "\\{:}{:?}", i, state.get().unwrap())
+            }
             StateKind::Match => write!(f, ""),
         }
     }
@@ -370,7 +386,10 @@ impl StateKind {
                 Some(s) => s.kind.leads_directly_to_match(),
                 None => false,
             },
-            Self::Simple(_, _) => false,
+            Self::Simple(_, _)
+            | StateKind::StartRecording(_, _)
+            | StateKind::Replay(_, _)
+            | StateKind::StopRecording(_, _) => false,
             Self::Split(s1, s2, split_t) => match split_t {
                 SplitType::Pipe => {
                     s1.get().unwrap().kind.leads_directly_to_match()
@@ -710,14 +729,18 @@ impl<'a> Parser<'a> {
     }
 
     fn bracketed_fragment(&mut self) -> Result<Fragment> {
-        self.consume(Token::LeftBracket)?;
-
         let mut fragments: Vec<Fragment> = vec![];
+
+        self.consume(Token::LeftBracket)?;
+        let state = Rc::new(State::new(StateKind::StartRecording(0, OnceCell::new())));
+        fragments.push(Fragment::new(state.clone(), vec![state.clone()]));
 
         while self.peek()? != Token::RightBracket {
             fragments.push(self.pipe()?);
         }
         self.consume(Token::RightBracket)?;
+        let state = Rc::new(State::new(StateKind::StopRecording(0, OnceCell::new())));
+        fragments.push(Fragment::new(state.clone(), vec![state.clone()]));
 
         let mut current = fragments.pop().unwrap();
 
