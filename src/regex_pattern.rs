@@ -1,6 +1,6 @@
 use anyhow::{anyhow, Result};
 use std::cell::{Cell, OnceCell};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::fmt::{Debug, Formatter};
 use std::hash::Hash;
 use std::rc::Rc;
@@ -63,8 +63,6 @@ impl<'a> Scanner<'a> {
         while let Some(c) = self.advance() {
             if c == '\\' {
                 tokens.push(Token::Escape)
-            } else if c.is_alphabetic() || c == '.' || c == '_' || c == ' ' || c == '@' {
-                tokens.push(Token::Character(c))
             } else if c == '|' {
                 tokens.push(Token::Pipe);
             } else if c == '(' {
@@ -85,6 +83,8 @@ impl<'a> Scanner<'a> {
                 tokens.push(Token::Caret)
             } else if c == '$' {
                 tokens.push(Token::Dollar)
+            } else {
+                tokens.push(Token::Character(c))
             }
         }
         return tokens;
@@ -216,9 +216,9 @@ enum StateKind {
     Split(OnceCell<StateMut>, OnceCell<StateMut>, SplitType),
     Match,
     Start(OnceCell<StateMut>),
-    StartRecording(u8, OnceCell<StateMut>),
-    StopRecording(u8, OnceCell<StateMut>),
-    Replay(u8, OnceCell<StateMut>),
+    StartRecording(u32, OnceCell<StateMut>),
+    StopRecording(u32, OnceCell<StateMut>),
+    Replay(u32, OnceCell<StateMut>),
 }
 
 static mut STATE_ID: usize = 0;
@@ -479,11 +479,18 @@ impl Fragment {
 struct Parser<'a> {
     tokens: &'a Vec<Token>,
     current: usize,
+    is_backreference_present: bool,
+    current_backref_id: u32,
 }
 
 impl<'a> Parser<'a> {
     pub fn new(tokens: &'a Vec<Token>) -> Self {
-        return Parser { tokens, current: 0 };
+        return Parser {
+            tokens,
+            current: 0,
+            is_backreference_present: false,
+            current_backref_id: 0,
+        };
     }
 
     pub fn parse(&mut self) -> Result<State> {
@@ -540,6 +547,13 @@ impl<'a> Parser<'a> {
 
     fn peek(&self) -> Result<Token> {
         match self.tokens.get(self.current).map(|x| *x) {
+            Some(t) => Ok(t),
+            None => Err(anyhow!("End of file reached")),
+        }
+    }
+
+    fn peek_next(&self) -> Result<Token> {
+        match self.tokens.get(self.current + 1).map(|x| *x) {
             Some(t) => Ok(t),
             None => Err(anyhow!("End of file reached")),
         }
@@ -628,6 +642,22 @@ impl<'a> Parser<'a> {
         fragment.patch_by(split_rc)
     }
 
+    fn state_regex_matchable(&mut self) -> Result<Fragment> {
+        let state = Rc::new(State::from(self.regex_matchable()?));
+        let mut fragment = Fragment::new(state.clone(), vec![state.clone()]);
+
+        if let Ok(current) = self.peek() {
+            match current {
+                Token::QuestionMark => self.question_mark(&mut fragment)?,
+                Token::Asterisk => self.wildcard(&mut fragment)?,
+                Token::Plus => self.plus(&mut fragment)?,
+                _ => {}
+            };
+        };
+
+        Ok(fragment)
+    }
+
     fn state(&mut self) -> Result<Fragment> {
         match self.peek()? {
             Token::Caret => {
@@ -640,21 +670,25 @@ impl<'a> Parser<'a> {
                 let anchor = Rc::new(State::from(RegexMatchable::Anchor(Anchor::End)));
                 Ok(Fragment::new(anchor.clone(), vec![anchor]))
             }
-            _ => {
-                let state = Rc::new(State::from(self.regex_matchable()?));
-                let mut fragment = Fragment::new(state.clone(), vec![state.clone()]);
-
-                if let Ok(current) = self.peek() {
-                    match current {
-                        Token::QuestionMark => self.question_mark(&mut fragment)?,
-                        Token::Asterisk => self.wildcard(&mut fragment)?,
-                        Token::Plus => self.plus(&mut fragment)?,
-                        _ => {}
-                    };
-                };
-
-                Ok(fragment)
+            Token::Escape => {
+                if let Token::Character(c) = self.peek_next()? {
+                    if c.is_numeric() {
+                        let backref = Rc::new(State::new(StateKind::Replay(
+                            c.to_digit(10).expect("not a number"),
+                            OnceCell::new(),
+                        )));
+                        self.is_backreference_present = true;
+                        self.advance();
+                        self.advance();
+                        Ok(Fragment::new(backref.clone(), vec![backref]))
+                    } else {
+                        self.state_regex_matchable()
+                    }
+                } else {
+                    self.state_regex_matchable()
+                }
             }
+            _ => self.state_regex_matchable(),
         }
     }
 
@@ -732,14 +766,23 @@ impl<'a> Parser<'a> {
         let mut fragments: Vec<Fragment> = vec![];
 
         self.consume(Token::LeftBracket)?;
-        let state = Rc::new(State::new(StateKind::StartRecording(0, OnceCell::new())));
+        self.current_backref_id += 1;
+        let current_ref_id = self.current_backref_id;
+
+        let state = Rc::new(State::new(StateKind::StartRecording(
+            current_ref_id,
+            OnceCell::new(),
+        )));
         fragments.push(Fragment::new(state.clone(), vec![state.clone()]));
 
         while self.peek()? != Token::RightBracket {
             fragments.push(self.pipe()?);
         }
         self.consume(Token::RightBracket)?;
-        let state = Rc::new(State::new(StateKind::StopRecording(0, OnceCell::new())));
+        let state = Rc::new(State::new(StateKind::StopRecording(
+            current_ref_id,
+            OnceCell::new(),
+        )));
         fragments.push(Fragment::new(state.clone(), vec![state.clone()]));
 
         let mut current = fragments.pop().unwrap();
@@ -783,7 +826,13 @@ impl StateCollection {
             return;
         }
 
-        self.states.push(state.clone());
+        match state.kind {
+            StateKind::StartRecording(_, ref next) | StateKind::StopRecording(_, ref next) => {
+                self.add_state(next.get().unwrap().clone());
+            }
+            StateKind::Replay(_, _) => panic!("Cannot use thompson Algorithm with backreference"),
+            _ => self.states.push(state.clone()),
+        }
     }
 
     pub fn clear(&mut self) {
@@ -816,31 +865,42 @@ impl Drop for StateCollection {
 }
 
 pub struct RegexPattern<'a> {
-    tokens: Vec<Token>,
     pattern: &'a str,
     start_state: State,
     last_list_id: Cell<i64>,
     to_match: Cell<Vec<char>>,
+    is_backref_present: bool,
+    backrefs: Cell<HashMap<u32, Vec<char>>>,
+    recording_backrefs_ids: Cell<HashSet<u32>>,
 }
 
 impl<'a> RegexPattern<'a> {
     pub fn new(pattern: &'a str) -> Result<Self> {
         let mut scanner = Scanner::new(pattern);
         let tokens = scanner.tokenize();
-        let start_state = Parser::new(&tokens).parse()?;
+        let mut parser = Parser::new(&tokens);
+        let start_state = parser.parse()?;
 
         return Ok(RegexPattern {
-            tokens,
             pattern,
             start_state,
             last_list_id: Cell::new(0),
             to_match: Cell::new(vec![]),
+            is_backref_present: parser.is_backreference_present,
+            backrefs: Cell::new(HashMap::new()),
+            recording_backrefs_ids: Cell::new(HashSet::new()),
         });
     }
 
     pub fn matches(&self, to_match: &str) -> Result<bool> {
-        // self.match_no_backtracking(to_match)
-        self.match_backtracking(to_match)
+        self.backrefs.set(HashMap::new());
+        self.recording_backrefs_ids.set(HashSet::new());
+
+        if self.is_backref_present {
+            self.match_backtracking(to_match)
+        } else {
+            self.match_no_backtracking(to_match)
+        }
     }
 
     fn match_no_backtracking(&self, to_match: &str) -> Result<bool> {
@@ -971,6 +1031,26 @@ impl<'a> RegexPattern<'a> {
         Ok(false)
     }
 
+    fn record_backref(&self, c: char) -> Result<()> {
+        let recording_backrefs = self.recording_backrefs_ids.take();
+        let mut backrefs = self.backrefs.take();
+
+        for i in recording_backrefs.iter() {
+            let mut backref = match backrefs.remove(i) {
+                Some(s) => s,
+                None => vec![],
+            };
+
+            backref.push(c);
+            backrefs.insert(*i, backref);
+        }
+
+        self.backrefs.set(backrefs);
+        self.recording_backrefs_ids.set(recording_backrefs);
+
+        Ok(())
+    }
+
     fn backtracking(&self, state: Rc<State>, to_match_index: usize) -> Result<bool> {
         if state.kind.leads_directly_to_match() {
             return Ok(true);
@@ -991,10 +1071,46 @@ impl<'a> RegexPattern<'a> {
                 self.to_match.set(to_match);
 
                 if matchable.matches(current_char) {
+                    self.record_backref(current_char)?;
                     return self.backtracking(next.get().unwrap().clone(), to_match_index + 1);
                 } else {
                     Ok(false)
                 }
+            }
+            StateKind::StartRecording(i, ref next) => {
+                let mut recording_backref = self.recording_backrefs_ids.take();
+                recording_backref.insert(i);
+                self.recording_backrefs_ids.set(recording_backref);
+
+                self.backtracking(next.get().unwrap().clone(), to_match_index)
+            }
+            StateKind::StopRecording(i, ref next) => {
+                let mut recording_backref = self.recording_backrefs_ids.take();
+                recording_backref.remove(&i);
+                self.recording_backrefs_ids.set(recording_backref);
+
+                self.backtracking(next.get().unwrap().clone(), to_match_index)
+            }
+            StateKind::Replay(i, ref next) => {
+                let backrefs = self.backrefs.take();
+                let to_replay = backrefs.get(&i).unwrap();
+                let to_match = self.to_match.take();
+
+                for (i, c) in to_replay.iter().enumerate() {
+                    if to_match[to_match_index + i] != *c {
+                        self.backrefs.set(backrefs);
+                        self.to_match.set(to_match);
+
+                        return Ok(false);
+                    }
+                }
+
+                let to_skip = to_replay.len();
+
+                self.backrefs.set(backrefs);
+                self.to_match.set(to_match);
+
+                return self.backtracking(next.get().unwrap().clone(), to_match_index + to_skip);
             }
             StateKind::Split(ref next1, ref next2, _) => {
                 if self.backtracking(next1.get().unwrap().clone(), to_match_index)? {
@@ -1475,5 +1591,72 @@ mod tests {
         };
         println!("\n{:?}\n", regex.start_state);
         assert!(regex.matches("I see 1 cat").unwrap());
+    }
+
+    #[test]
+    fn test_backrefs() {
+        let regex = match RegexPattern::new("(cat) and \\1") {
+            Ok(regex) => regex,
+            Err(err) => {
+                println!("{}", err);
+                assert!(false);
+                return;
+            }
+        };
+        println!("\n{:?}\n", regex.start_state);
+        assert!(regex.matches("cat and cat").unwrap());
+        assert!(!regex.matches("dog and dog").unwrap());
+        assert!(!regex.matches("cat and dog").unwrap());
+
+        let regex = match RegexPattern::new("(\\w+) and \\1") {
+            Ok(regex) => regex,
+            Err(err) => {
+                println!("{}", err);
+                assert!(false);
+                return;
+            }
+        };
+        println!("\n{:?}\n", regex.start_state);
+        assert!(regex.matches("cat and cat").unwrap());
+        assert!(regex.matches("dog and dog").unwrap());
+        assert!(!regex.matches("cat and dog").unwrap());
+        assert!(!regex.matches("dog and cat").unwrap());
+
+        let regex = match RegexPattern::new("(\\d+)-\\1") {
+            Ok(regex) => regex,
+            Err(err) => {
+                println!("{}", err);
+                assert!(false);
+                return;
+            }
+        };
+        println!("\n{:?}\n", regex.start_state);
+        assert!(regex.matches("123-123").unwrap());
+        assert!(!regex.matches("123-124").unwrap());
+
+        let regex = match RegexPattern::new("^([act]+) is \\1, not [^xyz]+$") {
+            Ok(regex) => regex,
+            Err(err) => {
+                println!("{}", err);
+                assert!(false);
+                return;
+            }
+        };
+        println!("\n{:?}\n", regex.start_state);
+        assert!(regex.matches("cat is cat, not dog").unwrap());
+    }
+
+    #[test]
+    fn test_debug() {
+        let regex = match RegexPattern::new("^([act]+) is \\1, not [^xyz]+$") {
+            Ok(regex) => regex,
+            Err(err) => {
+                println!("{}", err);
+                assert!(false);
+                return;
+            }
+        };
+        println!("\n{:?}\n", regex.start_state);
+        assert!(regex.matches("cat is cat, not dog").unwrap());
     }
 }
