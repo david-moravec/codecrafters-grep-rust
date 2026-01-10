@@ -1093,21 +1093,21 @@ impl<'a> RegexPattern<'a> {
             }
             StateKind::Replay(i, ref next) => {
                 let backrefs = self.backrefs.take();
-                let to_replay = backrefs.get(&i).unwrap();
+                let to_replay = backrefs.get(&i).unwrap().clone();
+                let to_skip = to_replay.len();
                 let to_match = self.to_match.take();
+                self.backrefs.set(backrefs);
 
                 for (i, c) in to_replay.iter().enumerate() {
                     if to_match[to_match_index + i] != *c {
-                        self.backrefs.set(backrefs);
                         self.to_match.set(to_match);
 
                         return Ok(false);
                     }
+
+                    self.record_backref(*c)?;
                 }
 
-                let to_skip = to_replay.len();
-
-                self.backrefs.set(backrefs);
                 self.to_match.set(to_match);
 
                 return self.backtracking(next.get().unwrap().clone(), to_match_index + to_skip);
@@ -1647,8 +1647,8 @@ mod tests {
     }
 
     #[test]
-    fn test_debug() {
-        let regex = match RegexPattern::new("^([act]+) is \\1, not [^xyz]+$") {
+    fn test_nested_backrefs() {
+        let regex = match RegexPattern::new("(\"(cat) and \\2\") is the same as \\1") {
             Ok(regex) => regex,
             Err(err) => {
                 println!("{}", err);
@@ -1657,6 +1657,24 @@ mod tests {
             }
         };
         println!("\n{:?}\n", regex.start_state);
-        assert!(regex.matches("cat is cat, not dog").unwrap());
+        assert!(regex
+            .matches("\"cat and cat\" is the same as \"cat and cat\"")
+            .unwrap());
+    }
+
+    #[test]
+    fn test_debug() {
+        let regex = match RegexPattern::new("(\"(cat) and \\2\") is the same as \\1") {
+            Ok(regex) => regex,
+            Err(err) => {
+                println!("{}", err);
+                assert!(false);
+                return;
+            }
+        };
+        println!("\n{:?}\n", regex.start_state);
+        assert!(regex
+            .matches("\"cat and cat\" is the same as \"cat and cat\"")
+            .unwrap());
     }
 }
