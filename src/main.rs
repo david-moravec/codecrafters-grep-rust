@@ -18,21 +18,27 @@ fn match_pattern(input_line: &str, pattern: &RegexPattern) -> bool {
     }
 }
 
-fn match_file(path: &str, pattern: &RegexPattern) {
+fn match_file(paths: &[String], pattern: &RegexPattern) {
     let mut matched = false;
+    let len_paths = paths.len();
 
-    if let Ok(file) = File::open(path) {
-        let buff = io::BufReader::new(file).lines();
+    for path in paths.iter() {
+        if let Ok(file) = File::open(path) {
+            let buff = io::BufReader::new(file).lines();
 
-        for line in buff.map_while(Result::ok) {
-            if match_pattern(&line, pattern) {
-                println!("{:}", line);
-                matched = true;
+            for line in buff.map_while(Result::ok) {
+                if match_pattern(&line, pattern) {
+                    if len_paths > 1 {
+                        print!("{:}:", path);
+                    }
+                    println!("{:}", line);
+                    matched = true;
+                }
             }
-        }
-    } else {
-        println!("Opening of file {:?} failed", path);
-    };
+        } else {
+            println!("Opening of file {:?} failed", path);
+        };
+    }
 
     if matched {
         process::exit(0);
@@ -59,6 +65,8 @@ fn main() {
         process::exit(1);
     }
 
+    let args_vec: Vec<String> = env::args().collect();
+
     let pattern = env::args().nth(2).unwrap();
 
     let regex = match RegexPattern::new(&pattern) {
@@ -69,8 +77,8 @@ fn main() {
         }
     };
 
-    if let Some(ref path) = env::args().nth(3) {
-        match_file(path, &regex);
+    if args_vec.len() > 3 {
+        match_file(&args_vec[3..], &regex);
     } else {
         let mut input_line = String::new();
         io::stdin().read_line(&mut input_line).unwrap();
