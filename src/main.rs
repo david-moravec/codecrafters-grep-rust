@@ -1,16 +1,51 @@
 #![allow(dead_code)]
 use regex_pattern::RegexPattern;
 use std::env;
-use std::io;
+use std::fs::File;
+use std::io::{self, BufRead};
 use std::process;
 
 mod regex_pattern;
 
-fn match_pattern(input_line: &str, pattern: &str) -> bool {
-    if pattern.chars().count() == 1 {
-        return input_line.contains(pattern);
+fn match_pattern(input_line: &str, pattern: &RegexPattern) -> bool {
+    // Uncomment this block to pass the first stage
+    match pattern.matches(&input_line) {
+        Ok(matches) => matches,
+        Err(e) => {
+            println!("{}", e);
+            process::exit(1);
+        }
+    }
+}
+
+fn match_file(path: &str, pattern: &RegexPattern) {
+    let mut matched = false;
+
+    if let Ok(file) = File::open(path) {
+        let buff = io::BufReader::new(file).lines();
+
+        for line in buff.map_while(Result::ok) {
+            if match_pattern(&line, pattern) {
+                println!("{:}", line);
+                matched = true;
+            }
+        }
     } else {
-        panic!("Unhandled pattern: {}", pattern)
+        println!("Opening of file {:?} failed", path);
+    };
+
+    if matched {
+        process::exit(0);
+    } else {
+        process::exit(1);
+    }
+}
+
+fn match_line(input_line: &str, pattern: &RegexPattern) {
+    if match_pattern(&input_line, pattern) {
+        process::exit(0);
+    } else {
+        process::exit(1);
     }
 }
 
@@ -25,9 +60,6 @@ fn main() {
     }
 
     let pattern = env::args().nth(2).unwrap();
-    let mut input_line = String::new();
-
-    io::stdin().read_line(&mut input_line).unwrap();
 
     let regex = match RegexPattern::new(&pattern) {
         Ok(r) => r,
@@ -37,18 +69,11 @@ fn main() {
         }
     };
 
-    // Uncomment this block to pass the first stage
-    match regex.matches(&input_line) {
-        Ok(matches) => {
-            if matches {
-                process::exit(0);
-            } else {
-                process::exit(1);
-            }
-        }
-        Err(e) => {
-            println!("{}", e);
-            process::exit(1);
-        }
+    if let Some(ref path) = env::args().nth(3) {
+        match_file(path, &regex);
+    } else {
+        let mut input_line = String::new();
+        io::stdin().read_line(&mut input_line).unwrap();
+        match_line(&input_line, &regex);
     }
 }
