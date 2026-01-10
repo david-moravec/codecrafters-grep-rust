@@ -7,7 +7,9 @@ use std::process;
 
 use clap::Parser;
 
+mod regex_parser;
 mod regex_pattern;
+mod regex_scanner;
 
 #[derive(Parser, Debug)]
 #[command(version, about, long_about = None)]
