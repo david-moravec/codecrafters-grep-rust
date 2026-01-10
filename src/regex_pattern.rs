@@ -610,8 +610,19 @@ impl<'a> Parser<'a> {
     }
 
     fn wildcard(&mut self, fragment: &mut Fragment) -> Result<()> {
-        // self.consume(Token::Wildcard)?;
-        !unimplemented!()
+        self.consume(Token::Asterisk)?;
+
+        let split_rc = Rc::new(State::new(StateKind::Split(
+            OnceCell::from(fragment.state.clone()),
+            OnceCell::new(),
+            SplitType::Plus,
+        )));
+
+        fragment.patch_by(split_rc.clone())?;
+
+        *fragment = Fragment::new(split_rc.clone(), vec![split_rc]);
+
+        Ok(())
     }
 
     fn question_mark(&mut self, fragment: &mut Fragment) -> Result<()> {
@@ -644,16 +655,7 @@ impl<'a> Parser<'a> {
 
     fn state_regex_matchable(&mut self) -> Result<Fragment> {
         let state = Rc::new(State::from(self.regex_matchable()?));
-        let mut fragment = Fragment::new(state.clone(), vec![state.clone()]);
-
-        if let Ok(current) = self.peek() {
-            match current {
-                Token::QuestionMark => self.question_mark(&mut fragment)?,
-                Token::Asterisk => self.wildcard(&mut fragment)?,
-                Token::Plus => self.plus(&mut fragment)?,
-                _ => {}
-            };
-        };
+        let fragment = Fragment::new(state.clone(), vec![state.clone()]);
 
         Ok(fragment)
     }
@@ -715,6 +717,18 @@ impl<'a> Parser<'a> {
         while !self.is_at_end() {
             match self.peek()? {
                 Token::Pipe | Token::RightBracket => break,
+                Token::Asterisk | Token::QuestionMark | Token::Plus => {
+                    let mut fragment = fragments.pop().unwrap();
+
+                    match self.peek()? {
+                        Token::QuestionMark => self.question_mark(&mut fragment)?,
+                        Token::Asterisk => self.wildcard(&mut fragment)?,
+                        Token::Plus => self.plus(&mut fragment)?,
+                        _ => {}
+                    };
+
+                    fragments.push(fragment);
+                }
                 Token::LeftBracket => fragments.push(self.bracketed_fragment()?),
                 _ => fragments.push(self.state()?),
             }
