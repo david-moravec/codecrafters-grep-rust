@@ -1,8 +1,8 @@
 #![allow(dead_code)]
 use regex_pattern::RegexPattern;
-use std::env;
-use std::fs::File;
+use std::fs::{self, File};
 use std::io::{self, BufRead};
+use std::path::Path;
 use std::process;
 
 use clap::Parser;
@@ -36,7 +36,36 @@ fn match_pattern(input_line: &str, pattern: &RegexPattern) -> bool {
     }
 }
 
-fn match_file(paths: &[String], pattern: &RegexPattern) {
+fn match_dir(path: &Path, pattern: &RegexPattern) -> bool {
+    let mut matched = false;
+
+    if path.is_dir() {
+        for entry in fs::read_dir(path).expect(&format!("Failed to read dir in {:?}", path)) {
+            let entry = entry.expect(&format!("Failed to read entry in {:?}", path));
+
+            if entry.path().is_dir() {
+                matched |= match_dir(&entry.path(), pattern);
+            } else {
+                matched |= match_file(&[entry.path().to_str().unwrap().to_string()], pattern, true)
+            }
+        }
+    }
+
+    matched
+}
+
+fn match_dirs(paths: &[String], pattern: &RegexPattern) -> bool {
+    let mut matched = false;
+
+    for path in paths.iter() {
+        let path_ = Path::new(path);
+        matched |= match_dir(&path_, pattern)
+    }
+
+    matched
+}
+
+fn match_file(paths: &[String], pattern: &RegexPattern, print_full_path: bool) -> bool {
     let mut matched = false;
     let len_paths = paths.len();
 
@@ -46,8 +75,12 @@ fn match_file(paths: &[String], pattern: &RegexPattern) {
 
             for line in buff.map_while(Result::ok) {
                 if match_pattern(&line, pattern) {
-                    if len_paths > 1 {
-                        print!("{:}:", path);
+                    if print_full_path {
+                        print!("{:}:", Path::new(path).to_str().unwrap());
+                    } else {
+                        if len_paths > 1 {
+                            print!("{:}:", path);
+                        }
                     }
                     println!("{:}", line);
                     matched = true;
@@ -58,11 +91,7 @@ fn match_file(paths: &[String], pattern: &RegexPattern) {
         };
     }
 
-    if matched {
-        process::exit(0);
-    } else {
-        process::exit(1);
-    }
+    matched
 }
 
 fn match_line(input_line: &str, pattern: &RegexPattern) {
@@ -86,7 +115,19 @@ fn main() {
     };
 
     if let Some(paths) = args.paths {
-        match_file(&paths, &regex);
+        if args.recursive {
+            if match_dirs(&paths, &regex) {
+                process::exit(0);
+            } else {
+                process::exit(1);
+            }
+        } else {
+            if match_file(&paths, &regex, false) {
+                process::exit(0);
+            } else {
+                process::exit(1);
+            }
+        }
     } else {
         let mut input_line = String::new();
         io::stdin().read_line(&mut input_line).unwrap();
