@@ -5,7 +5,25 @@ use std::fs::File;
 use std::io::{self, BufRead};
 use std::process;
 
+use clap::Parser;
+
 mod regex_pattern;
+
+#[derive(Parser, Debug)]
+#[command(version, about, long_about = None)]
+struct Args {
+    #[arg(short, action, default_value_t = false)]
+    recursive: bool,
+
+    #[arg(short = 'E', action)]
+    exec: bool,
+
+    #[arg()]
+    pattern: String,
+
+    #[arg(num_args=1.., value_delimiter=' ')]
+    paths: Option<Vec<String>>,
+}
 
 fn match_pattern(input_line: &str, pattern: &RegexPattern) -> bool {
     // Uncomment this block to pass the first stage
@@ -57,19 +75,9 @@ fn match_line(input_line: &str, pattern: &RegexPattern) {
 
 // Usage: echo <input_text> | your_program.sh -E <pattern>
 fn main() {
-    // You can use print statements as follows for debugging, they'll be visible when running tests.
-    eprintln!("Logs from your program will appear here!");
+    let args = Args::parse();
 
-    if env::args().nth(1).unwrap() != "-E" {
-        println!("Expected first argument to be '-E'");
-        process::exit(1);
-    }
-
-    let args_vec: Vec<String> = env::args().collect();
-
-    let pattern = env::args().nth(2).unwrap();
-
-    let regex = match RegexPattern::new(&pattern) {
+    let regex = match RegexPattern::new(&args.pattern) {
         Ok(r) => r,
         Err(e) => {
             println!("{}", e);
@@ -77,8 +85,8 @@ fn main() {
         }
     };
 
-    if args_vec.len() > 3 {
-        match_file(&args_vec[3..], &regex);
+    if let Some(paths) = args.paths {
+        match_file(&paths, &regex);
     } else {
         let mut input_line = String::new();
         io::stdin().read_line(&mut input_line).unwrap();
