@@ -579,6 +579,7 @@ impl Parser {
                 let anchor = Rc::new(State::from(RegexMatchable::Anchor(Anchor::End)));
                 Ok(Fragment::new(anchor.clone(), vec![anchor]))
             }
+            Token::LeftBracket => self.bracketed_fragment(),
             Token::Escape => {
                 if let Token::Character(c) = self.peek_next()? {
                     if c.is_numeric() {
@@ -618,27 +619,32 @@ impl Parser {
         return Ok(current);
     }
 
+    fn quantify(&mut self, fragment: &mut Fragment) -> Result<()> {
+        if self.is_at_end() {
+            return Ok(());
+        }
+
+        match self.peek().unwrap() {
+            Token::QuestionMark => self.question_mark(fragment)?,
+            Token::Asterisk => self.wildcard(fragment)?,
+            Token::Plus => self.plus(fragment)?,
+            _ => {}
+        };
+
+        Ok(())
+    }
+
     fn state_fragment(&mut self) -> Result<Fragment> {
         let mut fragments: Vec<Fragment> = vec![];
 
         while !self.is_at_end() {
-            match self.peek()? {
+            let mut last_fragment = match self.peek()? {
                 Token::Pipe | Token::RightBracket => break,
-                Token::Asterisk | Token::QuestionMark | Token::Plus => {
-                    let mut fragment = fragments.pop().unwrap();
+                _ => self.state()?,
+            };
 
-                    match self.peek()? {
-                        Token::QuestionMark => self.question_mark(&mut fragment)?,
-                        Token::Asterisk => self.wildcard(&mut fragment)?,
-                        Token::Plus => self.plus(&mut fragment)?,
-                        _ => {}
-                    };
-
-                    fragments.push(fragment);
-                }
-                Token::LeftBracket => fragments.push(self.bracketed_fragment()?),
-                _ => fragments.push(self.state()?),
-            }
+            self.quantify(&mut last_fragment)?;
+            fragments.push(last_fragment);
         }
 
         let mut current = fragments.pop().unwrap();
