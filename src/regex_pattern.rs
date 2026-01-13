@@ -129,7 +129,6 @@ impl<'a> RegexPattern<'a> {
     fn thompson_step(
         &self,
         c: char,
-        // index: usize,
         current_states: &StateCollection,
         next_states: &mut StateCollection,
     ) {
@@ -142,6 +141,23 @@ impl<'a> RegexPattern<'a> {
             {
                 if matchable.matches(c) {
                     next_states.add_state(n.get().unwrap().clone());
+                }
+            } else if let State {
+                kind: StateKind::Repeat(ref repeating_state),
+                id: _,
+                list_id: _,
+            } = **state
+            {
+                repeating_state
+                    .hit_count
+                    .set(repeating_state.hit_count.get() + 1);
+
+                if repeating_state.can_repeat_more() {
+                    next_states.add_state(repeating_state.to_repeat.clone());
+                }
+
+                if repeating_state.number_of_repeats_met() {
+                    next_states.add_state(repeating_state.next.get().unwrap().clone());
                 }
             } else {
                 panic!("Only statates with matchable can be matched");
@@ -821,8 +837,8 @@ mod tests {
     }
 
     #[test]
-    fn test_debug() {
-        let regex = match RegexPattern::new("(\"(cat) and \\2\") is the same as \\1") {
+    fn test_match_exact_number_of_times() {
+        let regex = match RegexPattern::new("ca{3}t") {
             Ok(regex) => regex,
             Err(err) => {
                 println!("{}", err);
@@ -831,8 +847,131 @@ mod tests {
             }
         };
         println!("\n{:?}\n", regex.start_state);
-        assert!(regex
-            .matches("\"cat and cat\" is the same as \"cat and cat\"")
-            .unwrap());
+        assert!(regex.matches("caaat").unwrap());
+        assert!(!regex.matches("caat").unwrap());
+        assert!(!regex.matches("caaaat").unwrap());
+
+        let regex = match RegexPattern::new("d\\d{2}g") {
+            Ok(regex) => regex,
+            Err(err) => {
+                println!("{}", err);
+                assert!(false);
+                return;
+            }
+        };
+        println!("\n{:?}\n", regex.start_state);
+        assert!(regex.matches("d42g").unwrap());
+        assert!(!regex.matches("d1g").unwrap());
+        assert!(!regex.matches("d123g").unwrap());
+
+        let regex = match RegexPattern::new("c[xyz]{4}w") {
+            Ok(regex) => regex,
+            Err(err) => {
+                println!("{}", err);
+                assert!(false);
+                return;
+            }
+        };
+        println!("\n{:?}\n", regex.start_state);
+        assert!(regex.matches("czyxzw").unwrap());
+        assert!(!regex.matches("czyxw").unwrap());
+    }
+
+    #[test]
+    fn test_match_at_least_number_of_times() {
+        let regex = match RegexPattern::new("ca{2,}t") {
+            Ok(regex) => regex,
+            Err(err) => {
+                println!("{}", err);
+                assert!(false);
+                return;
+            }
+        };
+        println!("\n{:?}\n", regex.start_state);
+        assert!(regex.matches("caat").unwrap());
+        assert!(regex.matches("caaaaaaaaaat").unwrap());
+        assert!(!regex.matches("cat").unwrap());
+
+        let regex = match RegexPattern::new("x\\d{3,}y") {
+            Ok(regex) => regex,
+            Err(err) => {
+                println!("{}", err);
+                assert!(false);
+                return;
+            }
+        };
+        println!("\n{:?}\n", regex.start_state);
+        assert!(regex.matches("x8888y").unwrap());
+        assert!(!regex.matches("x43y").unwrap());
+
+        let regex = match RegexPattern::new("b[aeiou]{2,}r") {
+            Ok(regex) => regex,
+            Err(err) => {
+                println!("{}", err);
+                assert!(false);
+                return;
+            }
+        };
+        println!("\n{:?}\n", regex.start_state);
+        assert!(regex.matches("baeiuor").unwrap());
+        assert!(!regex.matches("bar").unwrap());
+    }
+
+    #[test]
+    fn test_match_range_number_of_times() {
+        let regex = match RegexPattern::new("ca{2,4}t") {
+            Ok(regex) => regex,
+            Err(err) => {
+                println!("{}", err);
+                assert!(false);
+                return;
+            }
+        };
+        println!("\n{:?}\n", regex.start_state);
+        assert!(regex.matches("caat").unwrap());
+        assert!(regex.matches("caaat").unwrap());
+        assert!(regex.matches("caaaat").unwrap());
+        assert!(!regex.matches("caaaaaaaaaat").unwrap());
+        assert!(!regex.matches("cat").unwrap());
+
+        let regex = match RegexPattern::new("n\\d{1,3}m") {
+            Ok(regex) => regex,
+            Err(err) => {
+                println!("{}", err);
+                assert!(false);
+                return;
+            }
+        };
+        println!("\n{:?}\n", regex.start_state);
+        assert!(regex.matches("n123m").unwrap());
+        assert!(!regex.matches("n1234").unwrap());
+
+        let regex = match RegexPattern::new("p[xyz]{2,3}q") {
+            Ok(regex) => regex,
+            Err(err) => {
+                println!("{}", err);
+                assert!(false);
+                return;
+            }
+        };
+        println!("\n{:?}\n", regex.start_state);
+        assert!(regex.matches("pzzzq").unwrap());
+        assert!(!regex.matches("pzyzyq").unwrap());
+    }
+
+    #[test]
+    fn test_debug() {
+        let regex = match RegexPattern::new("ca{3}t") {
+            Ok(regex) => regex,
+            Err(err) => {
+                println!("{}", err);
+                assert!(false);
+                return;
+            }
+        };
+        // println!("\n{:?}\n", regex.start_state);
+        assert!(regex.matches("caaat").unwrap());
+        assert!(!regex.matches("caat").unwrap());
+        assert!(!regex.matches("caaaat").unwrap());
     }
 }

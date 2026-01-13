@@ -6,6 +6,8 @@ pub enum Token {
     RightBracket,
     LeftSquareBracket,
     RightSquareBracket,
+    LeftBrace,
+    RightBrace,
     Pipe,
     Asterisk,
     QuestionMark,
@@ -23,6 +25,8 @@ impl Token {
             Self::RightBracket => ')',
             Self::LeftSquareBracket => '[',
             Self::RightSquareBracket => ']',
+            Self::LeftBrace => '{',
+            Self::RightBrace => '}',
             Self::Pipe => '|',
             Self::Asterisk => '*',
             Self::QuestionMark => '?',
@@ -66,6 +70,10 @@ impl<'a> Scanner<'a> {
                 tokens.push(Token::LeftSquareBracket)
             } else if c == ']' {
                 tokens.push(Token::RightSquareBracket)
+            } else if c == '{' {
+                tokens.push(Token::LeftBrace)
+            } else if c == '}' {
+                tokens.push(Token::RightBrace)
             } else if c == '?' {
                 tokens.push(Token::QuestionMark)
             } else if c == '+' {

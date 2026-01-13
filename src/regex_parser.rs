@@ -117,7 +117,66 @@ impl Debug for SplitType {
     }
 }
 
+#[derive(Clone, Copy)]
+pub enum RepeatTimes {
+    Exactly(u32),
+    AtLeast(u32),
+    RangeInclusive(u32, u32),
+}
+
+impl Debug for RepeatTimes {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Exactly(n) => write!(f, "{{{:}}}", n),
+            Self::AtLeast(n) => write!(f, "{{{:},}}", n),
+            Self::RangeInclusive(min, max) => write!(f, "{{{:},{:}}}", min, max),
+        }
+    }
+}
+
 #[derive(Clone)]
+pub struct RepeatingState {
+    pub to_repeat: StateMut,
+    pub next: OnceCell<StateMut>,
+    pub how_many_times: RepeatTimes,
+    pub hit_count: Cell<u32>,
+}
+
+impl RepeatingState {
+    pub fn number_of_repeats_met(&self) -> bool {
+        let hit_count = self.hit_count.get();
+
+        match self.how_many_times {
+            RepeatTimes::Exactly(n) => hit_count == n,
+            RepeatTimes::AtLeast(n) => hit_count >= n,
+            RepeatTimes::RangeInclusive(min, max) => hit_count >= min && hit_count <= max,
+        }
+    }
+
+    pub fn can_repeat_more(&self) -> bool {
+        let hit_count = self.hit_count.get();
+
+        match self.how_many_times {
+            RepeatTimes::Exactly(n) => hit_count < n,
+            RepeatTimes::AtLeast(n) => hit_count < n,
+            RepeatTimes::RangeInclusive(_, max) => hit_count < max,
+        }
+    }
+}
+
+impl Debug for RepeatingState {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "(...){:?}{:?}",
+            // self.to_repeat,
+            self.how_many_times,
+            self.next.get().unwrap()
+        )
+    }
+}
+
+#[derive(Clone, Debug)]
 pub enum StateKind {
     Simple(RegexMatchable, OnceCell<StateMut>),
     Split(OnceCell<StateMut>, OnceCell<StateMut>, SplitType),
@@ -126,6 +185,7 @@ pub enum StateKind {
     StartRecording(u32, OnceCell<StateMut>),
     StopRecording(u32, OnceCell<StateMut>),
     Replay(u32, OnceCell<StateMut>),
+    Repeat(RepeatingState),
 }
 
 static mut STATE_ID: usize = 0;
@@ -176,6 +236,14 @@ impl State {
                 Ok(())
             }
             StateKind::Match => Err(anyhow!("Cannot patch mathed State")),
+            StateKind::Repeat(ref state) => {
+                if state.next.get().is_none() {
+                    let _ = state.next.set(next_state);
+                    // *next = Some(next_state);
+                    return Ok(());
+                }
+                Err(anyhow!("State is already connected"))
+            }
         }
     }
 
@@ -263,6 +331,9 @@ impl Debug for State {
             StateKind::Replay(i, state) => {
                 write!(f, "\\{:}{:?}", i, state.get().unwrap())
             }
+            StateKind::Repeat(ref repeat) => {
+                write!(f, "{:?}", repeat)
+            }
             StateKind::Match => write!(f, ""),
         }
     }
@@ -305,6 +376,14 @@ impl StateKind {
                 SplitType::Plus | SplitType::QuestionMark | SplitType::Wildcard => {
                     s2.get().unwrap().kind.leads_directly_to_match()
                 }
+            },
+            Self::Repeat(ref repeating) => match repeating.how_many_times {
+                RepeatTimes::Exactly(0)
+                | RepeatTimes::AtLeast(0)
+                | RepeatTimes::RangeInclusive(0, _) => {
+                    return repeating.next.get().unwrap().kind.leads_directly_to_match()
+                }
+                _ => return false,
             },
         }
     }
@@ -619,6 +698,49 @@ impl Parser {
         return Ok(current);
     }
 
+    fn match_number_of_times(&mut self, fragment: &mut Fragment) -> Result<()> {
+        self.consume(Token::LeftBrace)?;
+
+        let repeat: RepeatTimes;
+
+        if let Token::Character(c) = self.peek()? {
+            self.advance();
+            let min = c.to_digit(10).expect("Not a number");
+
+            if let Token::Character(',') = self.peek()? {
+                self.advance();
+
+                if let Token::Character(c) = self.peek()? {
+                    self.advance();
+                    repeat = RepeatTimes::RangeInclusive(min, c.to_digit(10).expect("Not a number"))
+                } else {
+                    repeat = RepeatTimes::AtLeast(min)
+                }
+            } else {
+                repeat = RepeatTimes::Exactly(min)
+            }
+        } else {
+            return Err(anyhow!(
+                "Expected specifying how many times preceeding element should be matched"
+            ));
+        };
+
+        self.consume(Token::RightBrace)?;
+
+        let repeat_state = Rc::new(State::new(StateKind::Repeat(RepeatingState {
+            to_repeat: fragment.state.clone(),
+            next: OnceCell::new(),
+            how_many_times: repeat,
+            hit_count: Cell::new(0),
+        })));
+
+        fragment.patch_by(repeat_state.clone())?;
+
+        *fragment = Fragment::new(repeat_state.clone(), vec![repeat_state]);
+
+        Ok(())
+    }
+
     fn quantify(&mut self, fragment: &mut Fragment) -> Result<()> {
         if self.is_at_end() {
             return Ok(());
@@ -628,6 +750,7 @@ impl Parser {
             Token::QuestionMark => self.question_mark(fragment)?,
             Token::Asterisk => self.wildcard(fragment)?,
             Token::Plus => self.plus(fragment)?,
+            Token::LeftBrace => self.match_number_of_times(fragment)?,
             _ => {}
         };
 
