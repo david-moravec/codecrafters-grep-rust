@@ -158,7 +158,7 @@ impl RepeatingState {
 
         match self.how_many_times {
             RepeatTimes::Exactly(n) => hit_count < n,
-            RepeatTimes::AtLeast(n) => hit_count < n,
+            RepeatTimes::AtLeast(_) => true,
             RepeatTimes::RangeInclusive(_, max) => hit_count < max,
         }
     }
@@ -377,14 +377,18 @@ impl StateKind {
                     s2.get().unwrap().kind.leads_directly_to_match()
                 }
             },
-            Self::Repeat(ref repeating) => match repeating.how_many_times {
-                RepeatTimes::Exactly(0)
-                | RepeatTimes::AtLeast(0)
-                | RepeatTimes::RangeInclusive(0, _) => {
-                    return repeating.next.get().unwrap().kind.leads_directly_to_match()
+            Self::Repeat(ref repeating) => {
+                repeating.hit_count.set(0);
+
+                match repeating.how_many_times {
+                    RepeatTimes::Exactly(0)
+                    | RepeatTimes::AtLeast(0)
+                    | RepeatTimes::RangeInclusive(0, _) => {
+                        return repeating.next.get().unwrap().kind.leads_directly_to_match()
+                    }
+                    _ => return false,
                 }
-                _ => return false,
-            },
+            }
         }
     }
 
@@ -398,6 +402,10 @@ impl StateKind {
     pub fn is_match(&self) -> bool {
         match self {
             Self::Match => true,
+            Self::Repeat(ref repeating) => {
+                repeating.hit_count.set(0);
+                false
+            }
             _ => false,
         }
     }

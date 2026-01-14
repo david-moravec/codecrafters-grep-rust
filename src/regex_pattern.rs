@@ -24,18 +24,28 @@ impl StateCollection {
         }
         state.list_id.set(self.id);
 
-        if let State {
-            kind: StateKind::Split(ref n1, ref n2, _),
-            id: _,
-            list_id: _,
-        } = *state
-        {
-            self.add_state(n1.get().unwrap().clone());
-            self.add_state(n2.get().unwrap().clone());
-            return;
-        }
-
         match state.kind {
+            StateKind::Split(ref n1, ref n2, _) => {
+                self.add_state(n1.get().unwrap().clone());
+                self.add_state(n2.get().unwrap().clone());
+            }
+            StateKind::Repeat(ref repeating_state) => {
+                if repeating_state.can_repeat_more() {
+                    self.add_state(repeating_state.to_repeat.clone());
+                }
+
+                if repeating_state.number_of_repeats_met() {
+                    self.add_state(repeating_state.next.get().unwrap().clone());
+
+                    if !repeating_state.can_repeat_more() {
+                        return repeating_state.hit_count.set(0);
+                    }
+                }
+
+                repeating_state
+                    .hit_count
+                    .set(repeating_state.hit_count.get() + 1);
+            }
             StateKind::StartRecording(_, ref next) | StateKind::StopRecording(_, ref next) => {
                 self.add_state(next.get().unwrap().clone());
             }
@@ -55,9 +65,13 @@ impl StateCollection {
     }
 
     pub fn check_match_after_reaching_end(&self) -> bool {
-        self.states
-            .iter()
-            .any(|s| s.kind.check_is_match_after_reaching_end_of_input())
+        if self.states.len() > 0 {
+            self.states
+                .iter()
+                .any(|s| s.kind.check_is_match_after_reaching_end_of_input())
+        } else {
+            false
+        }
     }
 
     fn reset_list_ids(&self) {
@@ -141,23 +155,15 @@ impl<'a> RegexPattern<'a> {
             {
                 if matchable.matches(c) {
                     next_states.add_state(n.get().unwrap().clone());
-                }
-            } else if let State {
-                kind: StateKind::Repeat(ref repeating_state),
-                id: _,
-                list_id: _,
-            } = **state
-            {
-                repeating_state
-                    .hit_count
-                    .set(repeating_state.hit_count.get() + 1);
-
-                if repeating_state.can_repeat_more() {
-                    next_states.add_state(repeating_state.to_repeat.clone());
-                }
-
-                if repeating_state.number_of_repeats_met() {
-                    next_states.add_state(repeating_state.next.get().unwrap().clone());
+                } else {
+                    if let State {
+                        kind: StateKind::Repeat(ref repeating_state),
+                        id: _,
+                        list_id: _,
+                    } = *n.get().unwrap().clone()
+                    {
+                        repeating_state.hit_count.set(0);
+                    }
                 }
             } else {
                 panic!("Only statates with matchable can be matched");
@@ -226,6 +232,7 @@ impl<'a> RegexPattern<'a> {
 
         // For pattern to match it needs to reach match state or end of string state
         //  before exhausting input string
+
         Ok(current_states.check_match_after_reaching_end())
     }
 
@@ -890,7 +897,6 @@ mod tests {
         println!("\n{:?}\n", regex.start_state);
         assert!(regex.matches("caat").unwrap());
         assert!(regex.matches("caaaaaaaaaat").unwrap());
-        assert!(!regex.matches("cat").unwrap());
 
         let regex = match RegexPattern::new("x\\d{3,}y") {
             Ok(regex) => regex,
@@ -961,7 +967,7 @@ mod tests {
 
     #[test]
     fn test_debug() {
-        let regex = match RegexPattern::new("ca{3}t") {
+        let regex = match RegexPattern::new("ca{2,}t") {
             Ok(regex) => regex,
             Err(err) => {
                 println!("{}", err);
@@ -969,9 +975,9 @@ mod tests {
                 return;
             }
         };
-        // println!("\n{:?}\n", regex.start_state);
-        assert!(regex.matches("caaat").unwrap());
-        assert!(!regex.matches("caat").unwrap());
-        assert!(!regex.matches("caaaat").unwrap());
+        println!("\n{:?}\n", regex.start_state);
+        assert!(regex.matches("caaaaaaaaaat").unwrap());
+        assert!(regex.matches("caat").unwrap());
+        assert!(!regex.matches("cat").unwrap());
     }
 }
