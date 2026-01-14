@@ -98,6 +98,7 @@ fn match_file(paths: &[String], pattern: &RegexPattern, print_full_path: bool) -
 
 fn match_line(input_line: &str, pattern: &RegexPattern) {
     if match_pattern(&input_line, pattern) {
+        println!("{:}", input_line);
         process::exit(0);
     } else {
         process::exit(1);
