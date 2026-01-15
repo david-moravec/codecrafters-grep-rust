@@ -1,7 +1,7 @@
 #![allow(dead_code)]
 use regex_pattern::RegexPattern;
 use std::fs::{self, File};
-use std::io::{self, BufRead};
+use std::io::{self, BufRead, Read};
 use std::path::Path;
 use std::process;
 
@@ -24,7 +24,7 @@ struct Args {
     pattern: String,
 
     #[arg(num_args=1.., value_delimiter=' ')]
-    paths: Option<Vec<String>>,
+    inputs: Vec<String>,
 }
 
 fn match_pattern(input_line: &str, pattern: &RegexPattern) -> bool {
@@ -32,7 +32,7 @@ fn match_pattern(input_line: &str, pattern: &RegexPattern) -> bool {
     match pattern.matches(&input_line) {
         Ok(matches) => matches,
         Err(e) => {
-            println!("{}", e);
+            println!("{:?}", e);
             process::exit(1);
         }
     }
@@ -96,12 +96,26 @@ fn match_file(paths: &[String], pattern: &RegexPattern, print_full_path: bool) -
     matched
 }
 
-fn match_line(input_line: &str, pattern: &RegexPattern) {
+fn match_lines(lines: &str, pattern: &RegexPattern) -> bool {
+    let mut matched = false;
+
+    let lines = lines.replace("\\n", "\n");
+
+    let lines_split: Vec<&str> = lines.split('\n').map(|s| s.trim()).collect();
+
+    for line in lines_split.iter() {
+        matched |= match_line(line, pattern);
+    }
+
+    matched
+}
+
+fn match_line(input_line: &str, pattern: &RegexPattern) -> bool {
     if match_pattern(&input_line, pattern) {
         println!("{:}", input_line);
-        process::exit(0);
+        true
     } else {
-        process::exit(1);
+        false
     }
 }
 
@@ -117,23 +131,28 @@ fn main() {
         }
     };
 
-    if let Some(paths) = args.paths {
-        if args.recursive {
-            if match_dirs(&paths, &regex) {
-                process::exit(0);
+    let matched;
+
+    if args.inputs.len() == 0 {
+        let mut line = String::new();
+        io::stdin().read_to_string(&mut line).unwrap();
+
+        matched = match_lines(&line, &regex);
+    } else {
+        if let Ok(true) = Path::new(&args.inputs[0]).try_exists() {
+            if args.recursive {
+                matched = match_dirs(&args.inputs, &regex);
             } else {
-                process::exit(1);
+                matched = match_file(&args.inputs, &regex, false);
             }
         } else {
-            if match_file(&paths, &regex, false) {
-                process::exit(0);
-            } else {
-                process::exit(1);
-            }
+            matched = match_lines(&args.inputs[0], &regex);
         }
+    }
+
+    if matched {
+        process::exit(0);
     } else {
-        let mut input_line = String::new();
-        io::stdin().read_line(&mut input_line).unwrap();
-        match_line(&input_line, &regex);
+        process::exit(1);
     }
 }
