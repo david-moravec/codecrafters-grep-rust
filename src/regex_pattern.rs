@@ -87,6 +87,20 @@ impl Drop for StateCollection {
     }
 }
 
+pub struct RegexMatch {
+    pub matched: bool,
+    pub match_str: String,
+}
+
+impl RegexMatch {
+    pub fn new(match_str: Option<String>) -> Self {
+        RegexMatch {
+            matched: match_str.is_some(),
+            match_str: match_str.unwrap_or_default(),
+        }
+    }
+}
+
 pub struct RegexPattern<'a> {
     pattern: &'a str,
     start_state: State,
@@ -113,7 +127,7 @@ impl<'a> RegexPattern<'a> {
         });
     }
 
-    pub fn matches(&self, to_match: &str) -> Result<bool> {
+    pub fn matches(&self, to_match: &str) -> Result<RegexMatch> {
         self.backrefs.set(HashMap::new());
         self.recording_backrefs_ids.set(HashSet::new());
 
@@ -124,26 +138,30 @@ impl<'a> RegexPattern<'a> {
         }
     }
 
-    fn match_no_backtracking(&self, to_match: &str) -> Result<bool> {
+    fn match_no_backtracking(&self, to_match: &str) -> Result<RegexMatch> {
         let chars: Vec<char> = to_match.chars().collect();
+
         for i in 0..chars.len() {
             match self.thompson_algorithm(&chars[i..].iter().collect::<String>(), i == 0) {
                 Ok(matches) => {
-                    if matches {
-                        return Ok(true);
+                    if matches.0 {
+                        return Ok(RegexMatch::new(Some(String::from_iter(
+                            chars[i..(i + matches.1)].iter(),
+                        ))));
                     }
                 }
                 Err(e) => return Err(e),
             }
         }
 
-        return Ok(self
-            .start_state
-            .kind
-            .check_is_match_after_reaching_end_of_input());
+        return Ok(RegexMatch::new(None));
     }
 
-    fn thompson_algorithm(&self, to_match: &str, starts_from_beginning: bool) -> Result<bool> {
+    fn thompson_algorithm(
+        &self,
+        to_match: &str,
+        starts_from_beginning: bool,
+    ) -> Result<(bool, usize)> {
         let chars: Vec<char> = to_match.chars().collect();
         let mut next_states: StateCollection = StateCollection::new(self.last_list_id.get());
         let mut current_states: StateCollection = StateCollection::new(self.last_list_id.get());
@@ -151,19 +169,19 @@ impl<'a> RegexPattern<'a> {
         if let Some(start) = self.init_state(starts_from_beginning) {
             current_states.add_state(start);
         } else {
-            return Ok(false);
+            return Ok((false, 0));
         }
 
-        for c in chars.iter() {
+        for (i, c) in chars.iter().enumerate() {
             next_states.clear();
             current_states.reset_list_ids();
 
             self.last_list_id.set(next_states.id);
 
             if current_states.states.len() == 0 {
-                return Ok(false);
+                return Ok((false, 0));
             } else if current_states.has_match() {
-                return Ok(true);
+                return Ok((true, i));
             }
 
             self.thompson_step(*c, &current_states, &mut next_states);
@@ -174,7 +192,7 @@ impl<'a> RegexPattern<'a> {
         // For pattern to match it needs to reach match state or end of string state
         //  before exhausting input string
 
-        Ok(current_states.check_match_after_reaching_end())
+        Ok((current_states.check_match_after_reaching_end(), chars.len()))
     }
 
     fn thompson_step(
@@ -208,14 +226,14 @@ impl<'a> RegexPattern<'a> {
         }
     }
 
-    fn match_backtracking(&self, to_match: &str) -> Result<bool> {
+    fn match_backtracking(&self, to_match: &str) -> Result<RegexMatch> {
         let mut init_state: Rc<State>;
 
         for (i, _) in to_match.chars().enumerate() {
             if let Some(start) = self.init_state(i == 0) {
                 init_state = start;
             } else {
-                return Ok(false);
+                return Ok(RegexMatch::new(None));
             }
 
             self.to_match.set(
@@ -226,11 +244,11 @@ impl<'a> RegexPattern<'a> {
             );
 
             if self.backtracking(init_state, 0)? {
-                return Ok(true);
+                return Ok(RegexMatch::new(Some(String::new())));
             }
         }
 
-        Ok(false)
+        Ok(RegexMatch::new(None))
     }
 
     fn backtracking(&self, state: Rc<State>, to_match_index: usize) -> Result<bool> {
@@ -254,6 +272,7 @@ impl<'a> RegexPattern<'a> {
 
                 if matchable.matches(current_char) {
                     self.record_backref(current_char)?;
+
                     return self.backtracking(next.get().unwrap().clone(), to_match_index + 1);
                 } else {
                     Ok(false)
@@ -304,6 +323,7 @@ impl<'a> RegexPattern<'a> {
             _ => panic!("Only statates with matchable can be matched"),
         }
     }
+
     fn record_backref(&self, c: char) -> Result<()> {
         let recording_backrefs = self.recording_backrefs_ids.take();
         let mut backrefs = self.backrefs.take();
@@ -375,8 +395,8 @@ mod tests {
         };
 
         print!("\n{:?}\n", regex.start_state);
-        assert!(regex.matches("7ahoj7").unwrap());
-        assert!(!regex.matches("aahoj7").unwrap());
+        assert!(regex.matches("7ahoj7").unwrap().matched);
+        assert!(!regex.matches("aahoj7").unwrap().matched);
     }
 
     #[test]
@@ -391,18 +411,18 @@ mod tests {
         };
 
         print!("\n{:?}\n", regex.start_state);
-        assert!(regex.matches("0").unwrap());
-        assert!(regex.matches("1").unwrap());
-        assert!(regex.matches("2").unwrap());
-        assert!(regex.matches("3").unwrap());
-        assert!(regex.matches("4").unwrap());
-        assert!(regex.matches("5").unwrap());
-        assert!(regex.matches("6").unwrap());
-        assert!(regex.matches("7").unwrap());
-        assert!(regex.matches("8").unwrap());
-        assert!(regex.matches("9").unwrap());
-        assert!(regex.matches("abc_0_xyz").unwrap());
-        assert!(!regex.matches("aahoj").unwrap());
+        assert!(regex.matches("0").unwrap().matched);
+        assert!(regex.matches("1").unwrap().matched);
+        assert!(regex.matches("2").unwrap().matched);
+        assert!(regex.matches("3").unwrap().matched);
+        assert!(regex.matches("4").unwrap().matched);
+        assert!(regex.matches("5").unwrap().matched);
+        assert!(regex.matches("6").unwrap().matched);
+        assert!(regex.matches("7").unwrap().matched);
+        assert!(regex.matches("8").unwrap().matched);
+        assert!(regex.matches("9").unwrap().matched);
+        assert!(regex.matches("abc_0_xyz").unwrap().matched);
+        assert!(!regex.matches("aahoj").unwrap().matched);
     }
 
     #[test]
@@ -417,12 +437,12 @@ mod tests {
         };
 
         print!("\n{:?}\n", regex.start_state);
-        assert!(regex.matches("apple").unwrap());
-        assert!(regex.matches("cab").unwrap());
-        assert!(!regex.matches("dog").unwrap());
-        assert!(regex.matches("a1b2c3").unwrap());
-        assert!(regex.matches("aahoj").unwrap());
-        assert!(!regex.matches("dhoj").unwrap());
+        assert!(regex.matches("apple").unwrap().matched);
+        assert!(regex.matches("cab").unwrap().matched);
+        assert!(!regex.matches("dog").unwrap().matched);
+        assert!(regex.matches("a1b2c3").unwrap().matched);
+        assert!(regex.matches("aahoj").unwrap().matched);
+        assert!(!regex.matches("dhoj").unwrap().matched);
     }
 
     #[test]
@@ -437,9 +457,9 @@ mod tests {
         };
 
         print!("\n{:?}\n", regex.start_state);
-        assert!(regex.matches("cat").unwrap());
-        assert!(!regex.matches("cab").unwrap());
-        assert!(regex.matches("dog").unwrap());
+        assert!(regex.matches("cat").unwrap().matched);
+        assert!(!regex.matches("cab").unwrap().matched);
+        assert!(regex.matches("dog").unwrap().matched);
     }
 
     #[test]
@@ -455,17 +475,17 @@ mod tests {
 
         print!("\n{:?}\n", regex.start_state);
         match regex.matches("1 apple") {
-            Ok(b) => assert!(b),
+            Ok(b) => assert!(b.matched),
             Err(e) => {
                 println!("{}", e);
                 assert!(false);
             }
         }
-        assert!(regex.matches("1 apple").unwrap());
-        assert!(!regex.matches("1 appx").unwrap());
-        assert!(!regex.matches("apple").unwrap());
-        assert!(!regex.matches(" apple").unwrap());
-        assert!(!regex.matches("x apple").unwrap());
+        assert!(regex.matches("1 apple").unwrap().matched);
+        assert!(!regex.matches("1 appx").unwrap().matched);
+        assert!(!regex.matches("apple").unwrap().matched);
+        assert!(!regex.matches(" apple").unwrap().matched);
+        assert!(!regex.matches("x apple").unwrap().matched);
     }
 
     #[test]
@@ -481,7 +501,7 @@ mod tests {
 
         print!("\n{:?}\n", regex.start_state);
         match regex.matches("sally has 12 apples") {
-            Ok(b) => assert!(!b),
+            Ok(b) => assert!(!b.matched),
             Err(e) => {
                 println!("{}", e);
                 assert!(false);
@@ -501,9 +521,9 @@ mod tests {
         };
 
         print!("\n{:?}\n", regex.start_state);
-        assert!(regex.matches("log").unwrap());
-        assert!(regex.matches("logs").unwrap());
-        assert!(!regex.matches("dlog").unwrap());
+        assert!(regex.matches("log").unwrap().matched);
+        assert!(regex.matches("logs").unwrap().matched);
+        assert!(!regex.matches("dlog").unwrap().matched);
 
         let regex = match RegexPattern::new("^\\d\\d\\d") {
             Ok(regex) => regex,
@@ -515,8 +535,8 @@ mod tests {
         };
         print!("\n{:?}\n", regex.start_state);
 
-        assert!(regex.matches("125ahoj").unwrap());
-        assert!(!regex.matches("12ahoj").unwrap());
+        assert!(regex.matches("125ahoj").unwrap().matched);
+        assert!(!regex.matches("12ahoj").unwrap().matched);
     }
 
     #[test]
@@ -531,9 +551,9 @@ mod tests {
         };
 
         print!("\n{:?}\n", regex.start_state);
-        assert!(regex.matches("hotdog").unwrap());
-        assert!(regex.matches("dog").unwrap());
-        assert!(!regex.matches("dogs").unwrap());
+        assert!(regex.matches("hotdog").unwrap().matched);
+        assert!(regex.matches("dog").unwrap().matched);
+        assert!(!regex.matches("dogs").unwrap().matched);
 
         let regex = match RegexPattern::new("\\d\\d\\d$") {
             Ok(regex) => regex,
@@ -545,9 +565,9 @@ mod tests {
         };
         print!("\n{:?}\n", regex.start_state);
 
-        assert!(regex.matches("ahoj125").unwrap());
-        assert!(regex.matches("125").unwrap());
-        assert!(!regex.matches("125j").unwrap());
+        assert!(regex.matches("ahoj125").unwrap().matched);
+        assert!(regex.matches("125").unwrap().matched);
+        assert!(!regex.matches("125j").unwrap().matched);
     }
 
     #[test]
@@ -562,13 +582,13 @@ mod tests {
         };
         // print!("\n{:?}\n", regex.start_state);
         // assert!(false);
-        assert!(regex.matches("apple").unwrap());
-        assert!(regex.matches("Saas").unwrap());
-        assert!(regex.matches("cats").unwrap());
-        assert!(regex.matches("caats").unwrap());
+        assert!(regex.matches("apple").unwrap().matched);
+        assert!(regex.matches("Saas").unwrap().matched);
+        assert!(regex.matches("cats").unwrap().matched);
+        assert!(regex.matches("caats").unwrap().matched);
 
-        assert!(!regex.matches("dog").unwrap());
-        assert!(!regex.matches("cts").unwrap());
+        assert!(!regex.matches("dog").unwrap().matched);
+        assert!(!regex.matches("cts").unwrap().matched);
 
         let regex = match RegexPattern::new("ca+ts") {
             Ok(regex) => regex,
@@ -579,12 +599,12 @@ mod tests {
             }
         };
 
-        assert!(regex.matches("caats").unwrap());
-        assert!(regex.matches("cats").unwrap());
-        assert!(regex.matches("caaatsx").unwrap());
-        assert!(regex.matches("caaaaaaaaaaaaatsx").unwrap());
+        assert!(regex.matches("caats").unwrap().matched);
+        assert!(regex.matches("cats").unwrap().matched);
+        assert!(regex.matches("caaatsx").unwrap().matched);
+        assert!(regex.matches("caaaaaaaaaaaaatsx").unwrap().matched);
 
-        assert!(!regex.matches("ctsx").unwrap());
+        assert!(!regex.matches("ctsx").unwrap().matched);
 
         let regex = match RegexPattern::new("ca+t") {
             Ok(regex) => regex,
@@ -595,10 +615,10 @@ mod tests {
             }
         };
 
-        assert!(regex.matches("cat").unwrap());
-        assert!(regex.matches("caaaaaaaaaaaaatsx").unwrap());
+        assert!(regex.matches("cat").unwrap().matched);
+        assert!(regex.matches("caaaaaaaaaaaaatsx").unwrap().matched);
 
-        assert!(!regex.matches("ctsx").unwrap());
+        assert!(!regex.matches("ctsx").unwrap().matched);
     }
 
     #[test]
@@ -613,7 +633,7 @@ mod tests {
         };
         println!("\n{:?}\n", regex.start_state);
         // assert!(false);
-        assert!(regex.matches("abc_123_xyz").unwrap());
+        assert!(regex.matches("abc_123_xyz").unwrap().matched);
     }
 
     #[test]
@@ -628,9 +648,9 @@ mod tests {
         };
         println!("\n{:?}\n", regex.start_state);
         // assert!(false);
-        assert!(regex.matches("dogs").unwrap());
-        assert!(regex.matches("dog").unwrap());
-        assert!(!regex.matches("cat").unwrap());
+        assert!(regex.matches("dogs").unwrap().matched);
+        assert!(regex.matches("dog").unwrap().matched);
+        assert!(!regex.matches("cat").unwrap().matched);
 
         let regex = match RegexPattern::new("colou?r") {
             Ok(regex) => regex,
@@ -642,9 +662,9 @@ mod tests {
         };
         println!("\n{:?}\n", regex.start_state);
 
-        assert!(regex.matches("color").unwrap());
-        assert!(regex.matches("colour").unwrap());
-        assert!(!regex.matches("collor").unwrap());
+        assert!(regex.matches("color").unwrap().matched);
+        assert!(regex.matches("colour").unwrap().matched);
+        assert!(!regex.matches("collor").unwrap().matched);
 
         let regex = match RegexPattern::new("ca?a?t") {
             Ok(regex) => regex,
@@ -654,7 +674,7 @@ mod tests {
                 return;
             }
         };
-        assert!(regex.matches("cat").unwrap());
+        assert!(regex.matches("cat").unwrap().matched);
 
         let regex = match RegexPattern::new("\\d?") {
             Ok(regex) => regex,
@@ -666,9 +686,9 @@ mod tests {
         };
         println!("\n{:?}\n", regex.start_state);
 
-        assert!(regex.matches("1").unwrap());
-        assert!(regex.matches("").unwrap());
-        assert!(!regex.matches("c").unwrap());
+        assert!(regex.matches("1").unwrap().matched);
+        assert!(regex.matches("").unwrap().matched);
+        assert!(!regex.matches("c").unwrap().matched);
     }
 
     #[test]
@@ -682,11 +702,11 @@ mod tests {
             }
         };
         println!("\n{:?}\n", regex.start_state);
-        assert!(regex.matches("dog").unwrap());
-        assert!(regex.matches("dag").unwrap());
-        assert!(regex.matches("d9g").unwrap());
-        assert!(!regex.matches("cog").unwrap());
-        assert!(!regex.matches("dg").unwrap());
+        assert!(regex.matches("dog").unwrap().matched);
+        assert!(regex.matches("dag").unwrap().matched);
+        assert!(regex.matches("d9g").unwrap().matched);
+        assert!(!regex.matches("cog").unwrap().matched);
+        assert!(!regex.matches("dg").unwrap().matched);
 
         let regex = match RegexPattern::new("...") {
             Ok(regex) => regex,
@@ -697,7 +717,7 @@ mod tests {
             }
         };
         println!("\n{:?}\n", regex.start_state);
-        assert!(regex.matches("cat").unwrap());
+        assert!(regex.matches("cat").unwrap().matched);
 
         let regex = match RegexPattern::new(".\\d.") {
             Ok(regex) => regex,
@@ -708,7 +728,7 @@ mod tests {
             }
         };
         println!("\n{:?}\n", regex.start_state);
-        assert!(regex.matches("a1b").unwrap());
+        assert!(regex.matches("a1b").unwrap().matched);
 
         let regex = match RegexPattern::new("g.+gol") {
             Ok(regex) => regex,
@@ -719,7 +739,7 @@ mod tests {
             }
         };
         println!("\n{:?}\n", regex.start_state);
-        assert!(regex.matches("goøö0Ogol").unwrap());
+        assert!(regex.matches("goøö0Ogol").unwrap().matched);
     }
 
     #[test]
@@ -733,10 +753,10 @@ mod tests {
             }
         };
         println!("\n{:?}\n", regex.start_state);
-        assert!(regex.matches("dog").unwrap());
-        assert!(regex.matches("cat").unwrap());
-        assert!(regex.matches("doghouse").unwrap());
-        assert!(!regex.matches("apple").unwrap());
+        assert!(regex.matches("dog").unwrap().matched);
+        assert!(regex.matches("cat").unwrap().matched);
+        assert!(regex.matches("doghouse").unwrap().matched);
+        assert!(!regex.matches("apple").unwrap().matched);
 
         let regex = match RegexPattern::new("I like (cats|dogs)") {
             Ok(regex) => regex,
@@ -747,8 +767,8 @@ mod tests {
             }
         };
         println!("\n{:?}\n", regex.start_state);
-        assert!(regex.matches("I like dogs").unwrap());
-        assert!(regex.matches("I like cats").unwrap());
+        assert!(regex.matches("I like dogs").unwrap().matched);
+        assert!(regex.matches("I like cats").unwrap().matched);
 
         let regex = match RegexPattern::new("(red|blue|green)") {
             Ok(regex) => regex,
@@ -759,10 +779,10 @@ mod tests {
             }
         };
         println!("\n{:?}\n", regex.start_state);
-        assert!(regex.matches("red").unwrap());
-        assert!(regex.matches("blue").unwrap());
-        assert!(regex.matches("green").unwrap());
-        assert!(!regex.matches("rex").unwrap());
+        assert!(regex.matches("red").unwrap().matched);
+        assert!(regex.matches("blue").unwrap().matched);
+        assert!(regex.matches("green").unwrap().matched);
+        assert!(!regex.matches("rex").unwrap().matched);
 
         let regex = match RegexPattern::new("^I see \\d+ (cat|dog)s?$") {
             Ok(regex) => regex,
@@ -773,7 +793,7 @@ mod tests {
             }
         };
         println!("\n{:?}\n", regex.start_state);
-        assert!(regex.matches("I see 1 cat").unwrap());
+        assert!(regex.matches("I see 1 cat").unwrap().matched);
     }
 
     #[test]
@@ -787,9 +807,9 @@ mod tests {
             }
         };
         println!("\n{:?}\n", regex.start_state);
-        assert!(regex.matches("cat and cat").unwrap());
-        assert!(!regex.matches("dog and dog").unwrap());
-        assert!(!regex.matches("cat and dog").unwrap());
+        assert!(regex.matches("cat and cat").unwrap().matched);
+        assert!(!regex.matches("dog and dog").unwrap().matched);
+        assert!(!regex.matches("cat and dog").unwrap().matched);
 
         let regex = match RegexPattern::new("(\\w+) and \\1") {
             Ok(regex) => regex,
@@ -800,10 +820,10 @@ mod tests {
             }
         };
         println!("\n{:?}\n", regex.start_state);
-        assert!(regex.matches("cat and cat").unwrap());
-        assert!(regex.matches("dog and dog").unwrap());
-        assert!(!regex.matches("cat and dog").unwrap());
-        assert!(!regex.matches("dog and cat").unwrap());
+        assert!(regex.matches("cat and cat").unwrap().matched);
+        assert!(regex.matches("dog and dog").unwrap().matched);
+        assert!(!regex.matches("cat and dog").unwrap().matched);
+        assert!(!regex.matches("dog and cat").unwrap().matched);
 
         let regex = match RegexPattern::new("(\\d+)-\\1") {
             Ok(regex) => regex,
@@ -814,8 +834,8 @@ mod tests {
             }
         };
         println!("\n{:?}\n", regex.start_state);
-        assert!(regex.matches("123-123").unwrap());
-        assert!(!regex.matches("123-124").unwrap());
+        assert!(regex.matches("123-123").unwrap().matched);
+        assert!(!regex.matches("123-124").unwrap().matched);
 
         let regex = match RegexPattern::new("^([act]+) is \\1, not [^xyz]+$") {
             Ok(regex) => regex,
@@ -826,7 +846,7 @@ mod tests {
             }
         };
         println!("\n{:?}\n", regex.start_state);
-        assert!(regex.matches("cat is cat, not dog").unwrap());
+        assert!(regex.matches("cat is cat, not dog").unwrap().matched);
     }
 
     #[test]
@@ -840,9 +860,12 @@ mod tests {
             }
         };
         println!("\n{:?}\n", regex.start_state);
-        assert!(regex
-            .matches("\"cat and cat\" is the same as \"cat and cat\"")
-            .unwrap());
+        assert!(
+            regex
+                .matches("\"cat and cat\" is the same as \"cat and cat\"")
+                .unwrap()
+                .matched
+        );
     }
 
     #[test]
@@ -856,9 +879,9 @@ mod tests {
             }
         };
         println!("\n{:?}\n", regex.start_state);
-        assert!(regex.matches("caaat").unwrap());
-        assert!(!regex.matches("caat").unwrap());
-        assert!(!regex.matches("caaaat").unwrap());
+        assert!(regex.matches("caaat").unwrap().matched);
+        assert!(!regex.matches("caat").unwrap().matched);
+        assert!(!regex.matches("caaaat").unwrap().matched);
 
         let regex = match RegexPattern::new("d\\d{2}g") {
             Ok(regex) => regex,
@@ -869,9 +892,9 @@ mod tests {
             }
         };
         println!("\n{:?}\n", regex.start_state);
-        assert!(regex.matches("d42g").unwrap());
-        assert!(!regex.matches("d1g").unwrap());
-        assert!(!regex.matches("d123g").unwrap());
+        assert!(regex.matches("d42g").unwrap().matched);
+        assert!(!regex.matches("d1g").unwrap().matched);
+        assert!(!regex.matches("d123g").unwrap().matched);
 
         let regex = match RegexPattern::new("c[xyz]{4}w") {
             Ok(regex) => regex,
@@ -882,8 +905,8 @@ mod tests {
             }
         };
         println!("\n{:?}\n", regex.start_state);
-        assert!(regex.matches("czyxzw").unwrap());
-        assert!(!regex.matches("czyxw").unwrap());
+        assert!(regex.matches("czyxzw").unwrap().matched);
+        assert!(!regex.matches("czyxw").unwrap().matched);
     }
 
     #[test]
@@ -897,8 +920,8 @@ mod tests {
             }
         };
         println!("\n{:?}\n", regex.start_state);
-        assert!(regex.matches("caat").unwrap());
-        assert!(regex.matches("caaaaaaaaaat").unwrap());
+        assert!(regex.matches("caat").unwrap().matched);
+        assert!(regex.matches("caaaaaaaaaat").unwrap().matched);
 
         let regex = match RegexPattern::new("x\\d{3,}y") {
             Ok(regex) => regex,
@@ -909,8 +932,8 @@ mod tests {
             }
         };
         println!("\n{:?}\n", regex.start_state);
-        assert!(regex.matches("x8888y").unwrap());
-        assert!(!regex.matches("x43y").unwrap());
+        assert!(regex.matches("x8888y").unwrap().matched);
+        assert!(!regex.matches("x43y").unwrap().matched);
 
         let regex = match RegexPattern::new("b[aeiou]{2,}r") {
             Ok(regex) => regex,
@@ -921,8 +944,8 @@ mod tests {
             }
         };
         println!("\n{:?}\n", regex.start_state);
-        assert!(regex.matches("baeiuor").unwrap());
-        assert!(!regex.matches("bar").unwrap());
+        assert!(regex.matches("baeiuor").unwrap().matched);
+        assert!(!regex.matches("bar").unwrap().matched);
     }
 
     #[test]
@@ -936,11 +959,11 @@ mod tests {
             }
         };
         println!("\n{:?}\n", regex.start_state);
-        assert!(regex.matches("caat").unwrap());
-        assert!(regex.matches("caaat").unwrap());
-        assert!(regex.matches("caaaat").unwrap());
-        assert!(!regex.matches("caaaaaaaaaat").unwrap());
-        assert!(!regex.matches("cat").unwrap());
+        assert!(regex.matches("caat").unwrap().matched);
+        assert!(regex.matches("caaat").unwrap().matched);
+        assert!(regex.matches("caaaat").unwrap().matched);
+        assert!(!regex.matches("caaaaaaaaaat").unwrap().matched);
+        assert!(!regex.matches("cat").unwrap().matched);
 
         let regex = match RegexPattern::new("n\\d{1,3}m") {
             Ok(regex) => regex,
@@ -951,8 +974,8 @@ mod tests {
             }
         };
         println!("\n{:?}\n", regex.start_state);
-        assert!(regex.matches("n123m").unwrap());
-        assert!(!regex.matches("n1234").unwrap());
+        assert!(regex.matches("n123m").unwrap().matched);
+        assert!(!regex.matches("n1234").unwrap().matched);
 
         let regex = match RegexPattern::new("p[xyz]{2,3}q") {
             Ok(regex) => regex,
@@ -963,8 +986,8 @@ mod tests {
             }
         };
         println!("\n{:?}\n", regex.start_state);
-        assert!(regex.matches("pzzzq").unwrap());
-        assert!(!regex.matches("pzyzyq").unwrap());
+        assert!(regex.matches("pzzzq").unwrap().matched);
+        assert!(!regex.matches("pzyzyq").unwrap().matched);
     }
 
     #[test]
@@ -978,8 +1001,8 @@ mod tests {
             }
         };
         println!("\n{:?}\n", regex.start_state);
-        assert!(regex.matches("caaaaaaaaaat").unwrap());
-        assert!(regex.matches("caat").unwrap());
-        assert!(!regex.matches("cat").unwrap());
+        assert!(regex.matches("caaaaaaaaaat").unwrap().matched);
+        assert!(regex.matches("caat").unwrap().matched);
+        assert!(!regex.matches("cat").unwrap().matched);
     }
 }
