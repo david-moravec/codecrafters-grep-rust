@@ -137,69 +137,10 @@ impl<'a> RegexPattern<'a> {
             }
         }
 
-        return Ok(self.start_state.kind.leads_directly_to_match());
-    }
-
-    fn thompson_step(
-        &self,
-        c: char,
-        current_states: &StateCollection,
-        next_states: &mut StateCollection,
-    ) {
-        for state in current_states.states.iter() {
-            if let State {
-                kind: StateKind::Simple(ref matchable, ref n),
-                id: _,
-                list_id: _,
-            } = **state
-            {
-                if matchable.matches(c) {
-                    next_states.add_state(n.get().unwrap().clone());
-                } else {
-                    if let State {
-                        kind: StateKind::Repeat(ref repeating_state),
-                        id: _,
-                        list_id: _,
-                    } = *n.get().unwrap().clone()
-                    {
-                        repeating_state.hit_count.set(0);
-                    }
-                }
-            } else {
-                panic!("Only statates with matchable can be matched");
-            }
-        }
-    }
-
-    fn init_state(&self, starts_from_beginning: bool) -> Option<Rc<State>> {
-        if let State {
-            kind: StateKind::Start(ref s),
-            id: _,
-            list_id: _,
-        } = self.start_state
-        {
-            match s.get() {
-                Some(s) => {
-                    if let State {
-                        kind: StateKind::Simple(RegexMatchable::Anchor(Anchor::Start), ref n1),
-                        id: _,
-                        list_id: _,
-                    } = **s
-                    {
-                        if starts_from_beginning {
-                            return Some(n1.get().unwrap().clone());
-                        } else {
-                            return None;
-                        }
-                    } else {
-                        return Some(s.clone());
-                    }
-                }
-                None => return None,
-            }
-        } else {
-            return None;
-        }
+        return Ok(self
+            .start_state
+            .kind
+            .check_is_match_after_reaching_end_of_input());
     }
 
     fn thompson_algorithm(&self, to_match: &str, starts_from_beginning: bool) -> Result<bool> {
@@ -236,6 +177,37 @@ impl<'a> RegexPattern<'a> {
         Ok(current_states.check_match_after_reaching_end())
     }
 
+    fn thompson_step(
+        &self,
+        c: char,
+        current_states: &StateCollection,
+        next_states: &mut StateCollection,
+    ) {
+        for state in current_states.states.iter() {
+            if let State {
+                kind: StateKind::Simple(ref matchable, ref n),
+                id: _,
+                list_id: _,
+            } = **state
+            {
+                if matchable.matches(c) {
+                    next_states.add_state(n.get().unwrap().clone());
+                } else {
+                    if let State {
+                        kind: StateKind::Repeat(ref repeating_state),
+                        id: _,
+                        list_id: _,
+                    } = *n.get().unwrap().clone()
+                    {
+                        repeating_state.hit_count.set(0);
+                    }
+                }
+            } else {
+                panic!("Only statates with matchable can be matched");
+            }
+        }
+    }
+
     fn match_backtracking(&self, to_match: &str) -> Result<bool> {
         let mut init_state: Rc<State>;
 
@@ -259,26 +231,6 @@ impl<'a> RegexPattern<'a> {
         }
 
         Ok(false)
-    }
-
-    fn record_backref(&self, c: char) -> Result<()> {
-        let recording_backrefs = self.recording_backrefs_ids.take();
-        let mut backrefs = self.backrefs.take();
-
-        for i in recording_backrefs.iter() {
-            let mut backref = match backrefs.remove(i) {
-                Some(s) => s,
-                None => vec![],
-            };
-
-            backref.push(c);
-            backrefs.insert(*i, backref);
-        }
-
-        self.backrefs.set(backrefs);
-        self.recording_backrefs_ids.set(recording_backrefs);
-
-        Ok(())
     }
 
     fn backtracking(&self, state: Rc<State>, to_match_index: usize) -> Result<bool> {
@@ -350,6 +302,56 @@ impl<'a> RegexPattern<'a> {
                 }
             }
             _ => panic!("Only statates with matchable can be matched"),
+        }
+    }
+    fn record_backref(&self, c: char) -> Result<()> {
+        let recording_backrefs = self.recording_backrefs_ids.take();
+        let mut backrefs = self.backrefs.take();
+
+        for i in recording_backrefs.iter() {
+            let mut backref = match backrefs.remove(i) {
+                Some(s) => s,
+                None => vec![],
+            };
+
+            backref.push(c);
+            backrefs.insert(*i, backref);
+        }
+
+        self.backrefs.set(backrefs);
+        self.recording_backrefs_ids.set(recording_backrefs);
+
+        Ok(())
+    }
+
+    fn init_state(&self, starts_from_beginning: bool) -> Option<Rc<State>> {
+        if let State {
+            kind: StateKind::Start(ref s),
+            id: _,
+            list_id: _,
+        } = self.start_state
+        {
+            match s.get() {
+                Some(s) => {
+                    if let State {
+                        kind: StateKind::Simple(RegexMatchable::Anchor(Anchor::Start), ref n1),
+                        id: _,
+                        list_id: _,
+                    } = **s
+                    {
+                        if starts_from_beginning {
+                            return Some(n1.get().unwrap().clone());
+                        } else {
+                            return None;
+                        }
+                    } else {
+                        return Some(s.clone());
+                    }
+                }
+                None => return None,
+            }
+        } else {
+            return None;
         }
     }
 }
