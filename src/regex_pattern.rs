@@ -274,17 +274,21 @@ impl<'a> RegexPattern<'a> {
                     .collect(),
             );
 
-            if self.backtracking(init_state, 0)? {
-                return Ok(RegexMatch::new(Some(String::new())));
+            let matched = self.backtracking(init_state, 0)?;
+
+            if matched.0 {
+                return Ok(RegexMatch::new(Some(String::from_iter(
+                    self.to_match.take()[..matched.1].iter(),
+                ))));
             }
         }
 
         Ok(RegexMatch::new(None))
     }
 
-    fn backtracking(&self, state: Rc<State>, to_match_index: usize) -> Result<bool> {
+    fn backtracking(&self, state: Rc<State>, to_match_index: usize) -> Result<(bool, usize)> {
         if state.kind.leads_directly_to_match() {
-            return Ok(true);
+            return Ok((true, to_match_index));
         }
 
         match state.kind {
@@ -292,9 +296,13 @@ impl<'a> RegexPattern<'a> {
                 let to_match = self.to_match.take();
 
                 if to_match.len() <= to_match_index {
+                    let len_to_match = to_match.len();
                     self.to_match.set(to_match);
 
-                    return Ok(state.kind.check_is_match_after_reaching_end_of_input());
+                    return Ok((
+                        state.kind.check_is_match_after_reaching_end_of_input(),
+                        len_to_match,
+                    ));
                 }
 
                 let current_char = to_match[to_match_index];
@@ -306,7 +314,7 @@ impl<'a> RegexPattern<'a> {
 
                     return self.backtracking(next.get().unwrap().clone(), to_match_index + 1);
                 } else {
-                    Ok(false)
+                    Ok((false, 0))
                 }
             }
             StateKind::StartRecording(i, ref next) => {
@@ -334,7 +342,7 @@ impl<'a> RegexPattern<'a> {
                     if to_match[to_match_index + i] != *c {
                         self.to_match.set(to_match);
 
-                        return Ok(false);
+                        return Ok((false, 0));
                     }
 
                     self.record_backref(*c)?;
@@ -345,8 +353,10 @@ impl<'a> RegexPattern<'a> {
                 return self.backtracking(next.get().unwrap().clone(), to_match_index + to_skip);
             }
             StateKind::Split(ref next1, ref next2, _) => {
-                if self.backtracking(next1.get().unwrap().clone(), to_match_index)? {
-                    return Ok(true);
+                let matched = self.backtracking(next1.get().unwrap().clone(), to_match_index)?;
+
+                if matched.0 {
+                    return Ok((true, matched.1));
                 } else {
                     return self.backtracking(next2.get().unwrap().clone(), to_match_index);
                 }
