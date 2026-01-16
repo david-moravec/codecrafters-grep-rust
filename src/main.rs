@@ -12,6 +12,13 @@ mod regex_parser;
 mod regex_pattern;
 mod regex_scanner;
 
+#[derive(Debug, Clone, clap::ValueEnum)]
+enum ColorOption {
+    Always,
+    Auto,
+    Never,
+}
+
 #[derive(Parser, Debug)]
 #[command(version, about, long_about = None)]
 struct Args {
@@ -24,11 +31,39 @@ struct Args {
     #[arg(short, action, default_value_t = false)]
     only_matching: bool,
 
+    #[arg(long, value_enum, default_value = "never")]
+    color: ColorOption,
+
     #[arg()]
     pattern: String,
 
     #[arg(num_args=1.., value_delimiter=' ')]
     inputs: Vec<String>,
+}
+
+fn print_matches_highlighted(input: &str, matches: &Vec<RegexMatch>) {
+    let mut highlited = 0;
+
+    for (i, c) in input.chars().enumerate() {
+        if matches.iter().any(|m| m.start == i) {
+            highlited += 1;
+
+            if highlited == 1 {
+                print!("\x1b[01;31m")
+            }
+        }
+
+        print!("{}", c);
+
+        if matches.iter().any(|m| m.end - 1 == i) {
+            highlited -= 1;
+
+            if highlited == 0 {
+                print!("\x1b[m")
+            }
+        }
+    }
+    print!("\n")
 }
 
 fn match_pattern(input_line: &str, pattern: &RegexPattern) -> Vec<RegexMatch> {
@@ -122,27 +157,22 @@ fn match_lines(lines: &str, pattern: &RegexPattern, args: &Args) -> bool {
 
 fn match_line(input_line: &str, pattern: &RegexPattern, args: &Args) -> bool {
     let regex_match_vec = match_pattern(&input_line, pattern);
-    let mut matched = false;
 
     if args.only_matching {
         for regex_match in regex_match_vec.iter() {
             println!("{}", regex_match.match_str);
-            matched = true;
         }
     } else {
-        match args.color {
-            ColorOption::Never => {
-                if regex_match_vec.len() > 0 {
-                    println!("{:}", input_line);
-                    matched |= true;
-                }
+        if regex_match_vec.len() > 0 {
+            match args.color {
+                ColorOption::Never => println!("{:}", input_line),
+                ColorOption::Always => print_matches_highlighted(input_line, &regex_match_vec),
+                ColorOption::Auto => {}
             }
-            ColorOption::Always => print_matches_highlighted(input_line, regex_match_vec),
-            ColorOption::Auto => {}
         }
     }
 
-    matched
+    regex_match_vec.len() > 0
 }
 
 fn main() {
