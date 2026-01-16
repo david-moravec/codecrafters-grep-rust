@@ -88,15 +88,17 @@ impl Drop for StateCollection {
 }
 
 pub struct RegexMatch {
-    pub matched: bool,
     pub match_str: String,
+    pub start: usize,
+    pub end: usize,
 }
 
 impl RegexMatch {
-    pub fn new(match_str: Option<String>) -> Self {
+    pub fn new(input: &str, start: usize, end: usize) -> Self {
         RegexMatch {
-            matched: match_str.is_some(),
-            match_str: match_str.unwrap_or_default(),
+            match_str: String::from_iter(input.chars().collect::<Vec<char>>()[start..end].iter()),
+            start,
+            end,
         }
     }
 }
@@ -132,13 +134,17 @@ impl<'a> RegexPattern<'a> {
         self.recording_backrefs_ids.set(HashSet::new());
 
         let matches_vec = if self.is_backref_present {
-            Ok(vec![self.match_backtracking(to_match)?])
+            if let Some(matched) = self.match_backtracking(to_match)? {
+                Ok(vec![matched])
+            } else {
+                Ok(vec![])
+            }
         } else {
             self.match_no_backtracking(to_match)
         };
 
         match matches_vec {
-            Ok(v) => Ok(v.iter().any(|m| m.matched)),
+            Ok(v) => Ok(v.len() > 0),
             Err(e) => Err(e),
         }
     }
@@ -148,7 +154,11 @@ impl<'a> RegexPattern<'a> {
         self.recording_backrefs_ids.set(HashSet::new());
 
         if self.is_backref_present {
-            Ok(vec![self.match_backtracking(to_match)?])
+            if let Some(matched) = self.match_backtracking(to_match)? {
+                Ok(vec![matched])
+            } else {
+                Ok(vec![])
+            }
         } else {
             self.match_no_backtracking(to_match)
         }
@@ -163,9 +173,7 @@ impl<'a> RegexPattern<'a> {
             match self.thompson_algorithm(&chars[i..].iter().collect::<String>(), i == 0) {
                 Ok(matches) => {
                     if matches.0 {
-                        matches_vec.push(RegexMatch::new(Some(String::from_iter(
-                            chars[i..(i + matches.1)].iter(),
-                        ))));
+                        matches_vec.push(RegexMatch::new(to_match, i, i + matches.1));
                     }
                 }
                 Err(e) => return Err(e),
@@ -257,14 +265,14 @@ impl<'a> RegexPattern<'a> {
         }
     }
 
-    fn match_backtracking(&self, to_match: &str) -> Result<RegexMatch> {
+    fn match_backtracking(&self, to_match: &str) -> Result<Option<RegexMatch>> {
         let mut init_state: Rc<State>;
 
         for (i, _) in to_match.chars().enumerate() {
             if let Some(start) = self.init_state(i == 0) {
                 init_state = start;
             } else {
-                return Ok(RegexMatch::new(None));
+                return Ok(None);
             }
 
             self.to_match.set(
@@ -277,13 +285,11 @@ impl<'a> RegexPattern<'a> {
             let matched = self.backtracking(init_state, 0)?;
 
             if matched.0 {
-                return Ok(RegexMatch::new(Some(String::from_iter(
-                    self.to_match.take()[..matched.1].iter(),
-                ))));
+                return Ok(Some(RegexMatch::new(to_match, i, matched.1)));
             }
         }
 
-        Ok(RegexMatch::new(None))
+        Ok(None)
     }
 
     fn backtracking(&self, state: Rc<State>, to_match_index: usize) -> Result<(bool, usize)> {

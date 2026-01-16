@@ -83,22 +83,21 @@ fn match_file(paths: &[String], pattern: &RegexPattern, args: &Args) -> bool {
                 let regex_match_vec = match_pattern(&line, pattern);
 
                 for regex_match in regex_match_vec.iter() {
-                    if regex_match.matched {
-                        if args.recursive {
-                            print!("{:}:", Path::new(path).to_str().unwrap());
-                        } else {
-                            if len_paths > 1 {
-                                print!("{:}:", path);
-                            }
+                    if args.recursive {
+                        print!("{:}:", Path::new(path).to_str().unwrap());
+                    } else {
+                        if len_paths > 1 {
+                            print!("{:}:", path);
                         }
-
-                        if args.only_matching {
-                            println!("{}", regex_match.match_str);
-                        } else {
-                            println!("{:}", line);
-                        }
-                        matched = regex_match.matched;
                     }
+
+                    if args.only_matching {
+                        println!("{}", regex_match.match_str);
+                    } else {
+                        println!("{:}", line);
+                    }
+
+                    matched = true;
                 }
             }
         } else {
@@ -127,15 +126,19 @@ fn match_line(input_line: &str, pattern: &RegexPattern, args: &Args) -> bool {
 
     if args.only_matching {
         for regex_match in regex_match_vec.iter() {
-            if regex_match.matched {
-                println!("{}", regex_match.match_str);
-                matched |= true;
-            }
+            println!("{}", regex_match.match_str);
+            matched = true;
         }
     } else {
-        if regex_match_vec.iter().any(|m| m.matched) {
-            println!("{:}", input_line);
-            matched |= true;
+        match args.color {
+            ColorOption::Never => {
+                if regex_match_vec.len() > 0 {
+                    println!("{:}", input_line);
+                    matched |= true;
+                }
+            }
+            ColorOption::Always => print_matches_highlighted(input_line, regex_match_vec),
+            ColorOption::Auto => {}
         }
     }
 
