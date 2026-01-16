@@ -1,5 +1,4 @@
 #![allow(dead_code)]
-use std::cell::OnceCell;
 use std::fs::{self, File};
 use std::io::{self, BufRead, Read};
 use std::path::Path;
@@ -32,9 +31,9 @@ struct Args {
     inputs: Vec<String>,
 }
 
-fn match_pattern(input_line: &str, pattern: &RegexPattern) -> RegexMatch {
+fn match_pattern(input_line: &str, pattern: &RegexPattern) -> Vec<RegexMatch> {
     // Uncomment this block to pass the first stage
-    match pattern.matches(&input_line) {
+    match pattern.all_matches(&input_line) {
         Ok(matches) => matches,
         Err(e) => {
             println!("{:?}", e);
@@ -91,23 +90,25 @@ fn match_file(
             let buff = io::BufReader::new(file).lines();
 
             for line in buff.map_while(Result::ok) {
-                let regex_match = match_pattern(&line, pattern);
+                let regex_match_vec = match_pattern(&line, pattern);
 
-                if regex_match.matched {
-                    if print_full_path {
-                        print!("{:}:", Path::new(path).to_str().unwrap());
-                    } else {
-                        if len_paths > 1 {
-                            print!("{:}:", path);
+                for regex_match in regex_match_vec.iter() {
+                    if regex_match.matched {
+                        if print_full_path {
+                            print!("{:}:", Path::new(path).to_str().unwrap());
+                        } else {
+                            if len_paths > 1 {
+                                print!("{:}:", path);
+                            }
                         }
-                    }
 
-                    if only_match {
-                        println!("{}", regex_match.match_str);
-                    } else {
-                        println!("{:}", line);
+                        if only_match {
+                            println!("{}", regex_match.match_str);
+                        } else {
+                            println!("{:}", line);
+                        }
+                        matched = regex_match.matched;
                     }
-                    matched = regex_match.matched;
                 }
             }
         } else {
@@ -133,18 +134,25 @@ fn match_lines(lines: &str, pattern: &RegexPattern, only_match: bool) -> bool {
 }
 
 fn match_line(input_line: &str, pattern: &RegexPattern, only_match: bool) -> bool {
-    let regex_match = match_pattern(&input_line, pattern);
+    let regex_match_vec = match_pattern(&input_line, pattern);
 
-    if regex_match.matched {
-        if only_match {
-            println!("{}", regex_match.match_str);
-        } else {
-            println!("{:}", input_line);
+    let mut matched = false;
+
+    if only_match {
+        for regex_match in regex_match_vec.iter() {
+            if regex_match.matched {
+                println!("{}", regex_match.match_str);
+                matched |= true;
+            }
         }
-        true
     } else {
-        false
+        if regex_match_vec.iter().any(|m| m.matched) {
+            println!("{:}", input_line);
+            matched |= true;
+        }
     }
+
+    matched
 }
 
 fn main() {
