@@ -169,12 +169,22 @@ impl<'a> RegexPattern<'a> {
 
         let mut matches_vec = vec![];
 
-        for i in 0..chars.len() {
+        let mut i = 0;
+
+        while i < chars.len() {
             match self.thompson_algorithm(&chars[i..].iter().collect::<String>(), i == 0) {
                 Ok(matches) => {
                     if matches.0 {
                         matches_vec.push(RegexMatch::new(to_match, i, i + matches.1));
                     }
+
+                    i += {
+                        if matches.1 > 0 {
+                            matches.1
+                        } else {
+                            1
+                        }
+                    };
                 }
                 Err(e) => return Err(e),
             }
