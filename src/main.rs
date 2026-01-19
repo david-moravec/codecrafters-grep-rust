@@ -1,6 +1,6 @@
 #![allow(dead_code)]
 use std::fs::{self, File};
-use std::io::{self, BufRead, Read};
+use std::io::{self, BufRead, IsTerminal, Read};
 use std::path::Path;
 use std::process;
 
@@ -167,7 +167,13 @@ fn match_line(input_line: &str, pattern: &RegexPattern, args: &Args) -> bool {
             match args.color {
                 ColorOption::Never => println!("{:}", input_line),
                 ColorOption::Always => print_matches_highlighted(input_line, &regex_match_vec),
-                ColorOption::Auto => {}
+                ColorOption::Auto => {
+                    if io::stdout().is_terminal() {
+                        print_matches_highlighted(input_line, &regex_match_vec)
+                    } else {
+                        println!("{:}", input_line)
+                    }
+                }
             }
         }
     }
